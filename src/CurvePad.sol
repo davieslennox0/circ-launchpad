@@ -66,6 +66,8 @@ contract CurvePad is FeeVault {
 
     uint256 public constant TOTAL_SUPPLY = 1_000_000_000 ether;
     uint256 public constant GUARD_BLOCKS = 5;
+    /// @notice During the first GUARD_BLOCKS after launch, at most this many curve tokens can be bought per block, summed
+    /// across all buyers (the creator's dev-buy inside createLaunch is exempt and not counted).
     uint256 public constant MAX_EARLY_BUY = TOTAL_SUPPLY / 100;
 
     address public immutable wokb;
@@ -89,6 +91,14 @@ contract CurvePad is FeeVault {
     uint128 internal immutable bemLpTokens;
 
     mapping(address token => Curve) public curves;
+
+    /// @dev Anti-snipe: curve tokens bought (all buyers combined) in `blockNumber`, tracked only during the guard window.
+    struct EarlyBlock {
+        uint64 blockNumber;
+        uint192 sold;
+    }
+
+    mapping(address token => EarlyBlock) public earlyBlock;
 
 
     event LaunchCreated(
@@ -118,6 +128,7 @@ contract CurvePad is FeeVault {
     error NotTapeOut();
     error UnknownLaunch();
     error CurveClosed();
+    error EarlyBlockCapReached();
     error NotComplete();
     error AlreadyGraduated();
     error Expired();
@@ -321,7 +332,15 @@ contract CurvePad is FeeVault {
         used = quoteIn;
 
         uint256 cap = c.tokensLeft;
-        if (!exempt && block.number < c.launchBlock + GUARD_BLOCKS && cap > MAX_EARLY_BUY) cap = MAX_EARLY_BUY;
+        bool guarded = !exempt && block.number < c.launchBlock + GUARD_BLOCKS;
+        uint256 soldThisBlock;
+        if (guarded) {
+            // Curve-wide per-block cap: every buyer and every call in this block share MAX_EARLY_BUY.
+            EarlyBlock memory e = earlyBlock[token];
+            if (e.blockNumber == block.number) soldThisBlock = e.sold;
+            if (soldThisBlock >= MAX_EARLY_BUY) revert EarlyBlockCapReached();
+            if (cap > MAX_EARLY_BUY - soldThisBlock) cap = MAX_EARLY_BUY - soldThisBlock;
+        }
         if (out > cap) {
             out = cap;
             net = CurveMath.quoteForTokens(c.vQuote, c.vToken, out);
@@ -330,6 +349,7 @@ contract CurvePad is FeeVault {
         }
         if (out == 0) revert ZeroAmount();
         if (out < minTokensOut) revert Slippage();
+        if (guarded) earlyBlock[token] = EarlyBlock(uint64(block.number), uint192(soldThisBlock + out));
 
         c.vQuote += net.toUint128();
         c.vToken -= out.toUint128();

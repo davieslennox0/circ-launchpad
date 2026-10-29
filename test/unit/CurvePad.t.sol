@@ -356,6 +356,57 @@ contract CurvePadUnitTest is UnitBase {
         assertFalse(ok);
     }
 
+    function test_antiSnipe_capIsCurveWidePerBlock_multiWallet() public {
+        LaunchToken t = _launch(address(wokb));
+        uint256 cap = pad.MAX_EARLY_BUY();
+        vm.prank(alice);
+        pad.buy(address(t), 1 ether, 0, block.timestamp); // well under the cap
+        uint256 a = t.balanceOf(alice);
+        assertLt(a, cap);
+        vm.prank(bob);
+        pad.buy(address(t), 50 ether, 0, block.timestamp); // capped at what's left of this block's allowance
+        assertEq(a + t.balanceOf(bob), cap, "alice + bob == one block's cap");
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.EarlyBlockCapReached.selector);
+        pad.buy(address(t), 1 ether, 0, block.timestamp);
+
+        vm.roll(block.number + 1); // fresh allowance next block, still inside the guard window
+        vm.prank(creator);
+        pad.buy(address(t), 50 ether, 0, block.timestamp);
+        assertEq(t.balanceOf(creator), cap);
+    }
+
+    function test_antiSnipe_batchedBuysInOneTxCapped() public {
+        LaunchToken t = _launch(address(wokb));
+        BatchBuyer bb = new BatchBuyer(pad, address(wokb));
+        vm.prank(alice);
+        wokb.transfer(address(bb), 1_000 ether);
+        bb.buyMany(address(t), 100, 1 ether); // 100 sequential buys in one tx, same block
+        assertEq(t.balanceOf(address(bb)), pad.MAX_EARLY_BUY(), "batch can't exceed the block cap");
+        (uint64 blk, uint192 sold) = pad.earlyBlock(address(t));
+        assertEq(blk, block.number);
+        assertEq(sold, pad.MAX_EARLY_BUY());
+    }
+
+    function test_antiSnipe_devBuyNotCounted() public {
+        vm.prank(creator);
+        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", address(wokb), 0, 0));
+        assertGt(t.balanceOf(creator), pad.MAX_EARLY_BUY());
+        vm.prank(alice);
+        pad.buy(address(t), 50 ether, 0, block.timestamp);
+        assertEq(t.balanceOf(alice), pad.MAX_EARLY_BUY(), "dev-buy didn't use up the launch block's allowance");
+    }
+
+    function test_antiSnipe_liftsAfterGuard() public {
+        LaunchToken t = _launch(address(wokb));
+        _skipGuard();
+        vm.prank(alice);
+        pad.buy(address(t), 50 ether, 0, block.timestamp);
+        vm.prank(bob);
+        pad.buy(address(t), 50 ether, 0, block.timestamp);
+        assertGt(t.balanceOf(alice) + t.balanceOf(bob), 2 * pad.MAX_EARLY_BUY());
+    }
+
     // ------------------------------------------------------------- completion
 
     function _fill(LaunchToken t, address who) internal returns (uint256 spent) {
@@ -495,4 +546,26 @@ contract PositionLocker2 {
         pad = p;
     }
 
+}
+
+/// @dev Splits one large buy into many sequential buys inside a single transaction.
+contract BatchBuyer {
+    CurvePad immutable pad;
+    address immutable quote;
+
+    constructor(CurvePad pad_, address quote_) {
+        pad = pad_;
+        quote = quote_;
+    }
+
+    function buyMany(address token, uint256 n, uint256 each) external {
+        IApprove(quote).approve(address(pad), type(uint256).max);
+        for (uint256 i; i < n; ++i) {
+            try pad.buy(token, each, 0, block.timestamp) {} catch {}
+        }
+    }
+}
+
+interface IApprove {
+    function approve(address, uint256) external returns (bool);
 }
