@@ -478,10 +478,9 @@ contract CurvePadUnitTest is UnitBase {
         vm.prank(npm);
         vm.expectRevert(PositionLocker.NotPad.selector);
         locker.onERC721Received(address(pad), address(pad), 1, abi.encode(address(0), address(0), address(0), 0));
+        address g = address(pad.graduator()); // resolve before prank: an external call would consume it
         vm.prank(npm);
-        locker.onERC721Received(
-            address(pad.graduator()), address(pad.graduator()), 1, abi.encode(address(1), address(2), address(nft), 1)
-        );
+        locker.onERC721Received(g, g, 1, abi.encode(address(1), address(2), address(nft), 1));
         assertEq(locker.containerOf(1), address(2));
     }
 }
