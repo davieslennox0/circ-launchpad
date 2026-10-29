@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /// @title LaunchToken
-/// @notice Fixed 1,000,000,000 supply, minted once to CurvePad. No owner, no mint, no pause, no blacklist.
+/// @notice Fixed 1,000,000,000 supply, minted once to CurvePad (`pad`). No owner, no mint, no pause, no blacklist.
 /// Until graduation, transfers to or from this token's future Uniswap v3 pool (token/quote, 1% tier) revert,
 /// so nobody can seed or trade that pool before the curve hands over. Wallet-to-wallet transfers are always free.
 contract LaunchToken is ERC20 {
@@ -12,6 +12,7 @@ contract LaunchToken is ERC20 {
     bytes32 internal constant POOL_INIT_CODE_HASH = 0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54;
     uint24 internal constant POOL_FEE = 10_000;
 
+    /// @notice CurvePad: holds the supply and is the only address that can flip `graduated`.
     address public immutable pad;
     address public immutable predictedPool;
     bool public graduated;
@@ -19,8 +20,12 @@ contract LaunchToken is ERC20 {
     error PoolLocked();
     error OnlyPad();
 
-    constructor(string memory name_, string memory symbol_, address quote, address v3Factory) ERC20(name_, symbol_) {
-        pad = msg.sender;
+    /// @dev Deployed by CurvePad's TokenDeployer, which passes CurvePad as `pad_`. The predicted pool depends only on
+    /// this token's own address, so it is correct whoever deploys it.
+    constructor(string memory name_, string memory symbol_, address quote, address v3Factory, address pad_)
+        ERC20(name_, symbol_)
+    {
+        pad = pad_;
         (address token0, address token1) = address(this) < quote ? (address(this), quote) : (quote, address(this));
         predictedPool = address(
             uint160(
@@ -33,7 +38,7 @@ contract LaunchToken is ERC20 {
                 )
             )
         );
-        _mint(msg.sender, 1_000_000_000 ether);
+        _mint(pad_, 1_000_000_000 ether);
     }
 
     /// @notice One-way switch, called by CurvePad when the curve sells out.

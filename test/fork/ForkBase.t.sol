@@ -103,6 +103,20 @@ abstract contract ForkBase is Test {
         }
         assertTrue(pool != address(0), "graduated");
         assertEq(pool, factory.getPool(address(t), quote, 10_000));
+        _assertGraduatorEmpty(address(t), quote);
+    }
+
+    /// @dev Graduator must hold nothing between calls.
+    function _assertGraduatorEmpty(address token, address quote) internal view {
+        address g = address(pad.graduator());
+        assertEq(IERC20(token).balanceOf(g), 0, "graduator token balance");
+        assertEq(IERC20(quote).balanceOf(g), 0, "graduator quote balance");
+        assertEq(IERC20(Addresses.WOKB).balanceOf(g), 0, "graduator WOKB balance");
+        assertEq(IERC20(Addresses.BEM).balanceOf(g), 0, "graduator BEM balance");
+        assertEq(g.balance, 0, "graduator native balance");
+        (bool ok, bytes memory r) = address(npm).staticcall(abi.encodeWithSignature("balanceOf(address)", g));
+        require(ok);
+        assertEq(abi.decode(r, (uint256)), 0, "graduator holds no position NFT");
     }
 
     function _positionLiquidity(uint256 positionId) internal view returns (uint128 liq) {

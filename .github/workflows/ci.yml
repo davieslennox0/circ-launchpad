@@ -17,8 +17,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
       - run: forge --version
-      - run: forge build --sizes
       - run: forge test --match-path "test/unit/*" -vvv
+
+  sizes:
+    name: Contract sizes (EIP-170 / EIP-3860)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Build src and report sizes
+        run: forge build --sizes --json --skip test --skip script > sizes.json || true
+      - name: Fail if any runtime > 24,576 B or initcode > 49,152 B
+        run: python3 script/ci/check_sizes.py sizes.json
 
   fork:
     name: Fork tests (X Layer mainnet) + gas report

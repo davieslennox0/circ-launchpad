@@ -5,6 +5,9 @@ import {UnitBase} from "./Base.t.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
 import {FeeVault} from "../../src/FeeVault.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
+import {TokenDeployer} from "../../src/TokenDeployer.sol";
+import {Graduator} from "../../src/Graduator.sol";
+import {PositionLocker} from "../../src/PositionLocker.sol";
 import {CurveConstants} from "../../script/CurveConstants.sol";
 
 contract CurvePadUnitTest is UnitBase {
@@ -358,5 +361,63 @@ contract PositionLocker2 {
     constructor(address n, address p) {
         npm = n;
         pad = p;
+    }
+
+    // ------------------------------------------------------------- helpers wiring
+
+    function test_helpers_deployedAndOwnedByPad() public view {
+        TokenDeployer d = pad.tokenDeployer();
+        Graduator g = pad.graduator();
+        assertEq(d.pad(), address(pad));
+        assertEq(d.v3Factory(), V3_FACTORY);
+        assertEq(g.pad(), address(pad));
+        assertEq(address(g.v3Factory()), V3_FACTORY);
+        assertEq(address(g.npm()), npm);
+        assertEq(g.locker(), address(locker));
+    }
+
+    function test_tokenDeployer_onlyPad() public {
+        TokenDeployer d = pad.tokenDeployer();
+        vm.prank(alice);
+        vm.expectRevert(TokenDeployer.OnlyPad.selector);
+        d.deploy(bytes32(0), "X", "X", address(wokb));
+    }
+
+    function test_graduator_onlyPad() public {
+        Graduator g = pad.graduator();
+        vm.prank(alice);
+        vm.expectRevert(Graduator.OnlyPad.selector);
+        g.graduate(address(1), address(wokb), 1, 1, 0, 0, "");
+    }
+
+    function test_graduator_callbackRejectsStrangers() public {
+        Graduator g = pad.graduator();
+        vm.expectRevert(Graduator.BadCallback.selector);
+        g.uniswapV3SwapCallback(1, 0, abi.encode(address(wokb), address(bem)));
+    }
+
+    function test_token_controllerIsPad_andAddressFromDeployer() public {
+        LaunchToken t = _launch(address(wokb));
+        assertEq(t.pad(), address(pad), "pad controls the token");
+        assertEq(t.balanceOf(address(pad)), 1e27, "full supply minted to pad");
+        bytes32 salt = keccak256(abi.encode(creator, address(nft), uint256(1)));
+        bytes memory init = abi.encodePacked(
+            type(LaunchToken).creationCode, abi.encode("Circ Test", "CT", address(wokb), V3_FACTORY, address(pad))
+        );
+        assertEq(address(t), vm.computeCreate2Address(salt, keccak256(init), address(pad.tokenDeployer())));
+        vm.prank(address(pad.tokenDeployer()));
+        vm.expectRevert(LaunchToken.OnlyPad.selector);
+        t.markGraduated();
+    }
+
+    function test_locker_rejectsNftsNotFromGraduator() public {
+        vm.prank(npm);
+        vm.expectRevert(PositionLocker.NotPad.selector);
+        locker.onERC721Received(address(pad), address(pad), 1, abi.encode(address(0), address(0), address(0), 0));
+        vm.prank(npm);
+        locker.onERC721Received(
+            address(pad.graduator()), address(pad.graduator()), 1, abi.encode(address(1), address(2), address(nft), 1)
+        );
+        assertEq(locker.containerOf(1), address(2));
     }
 }

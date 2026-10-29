@@ -7,6 +7,7 @@ import {ForkBase} from "./ForkBase.t.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
 import {TickMath} from "../../src/libraries/uniswap/TickMath.sol";
+import {Graduator} from "../../src/Graduator.sol";
 import {IUniswapV3Pool, INonfungiblePositionManager} from "../../src/interfaces/IUniswapV3.sol";
 import {Addresses} from "../../script/Addresses.sol";
 
@@ -53,7 +54,8 @@ contract ForkPoolAttackTest is ForkBase {
         t.approve(address(npm), type(uint256).max);
         wokb.approve(address(npm), type(uint256).max);
         (address t0, address t1) = address(t) < Addresses.WOKB ? (address(t), Addresses.WOKB) : (Addresses.WOKB, address(t));
-        vm.expectRevert(LaunchToken.PoolLocked.selector);
+        // The position manager pulls the token with TransferHelper, which surfaces LaunchToken's PoolLocked as "STF".
+        vm.expectRevert(bytes("STF"));
         npm.mint(
             INonfungiblePositionManager.MintParams(
                 t0, t1, 10_000, -887_200, 887_200, 1_000 ether, 1_000 ether, 0, 0, attacker, block.timestamp
@@ -83,7 +85,7 @@ contract ForkPoolAttackTest is ForkBase {
         if (expectRevert) {
             (, uint256 need) = pad.previewBuy(address(t), type(uint128).max);
             vm.prank(alice);
-            vm.expectRevert(CurvePad.NormalizeTooCostly.selector);
+            vm.expectRevert(Graduator.NormalizeTooCostly.selector);
             pad.buy(address(t), need, 0, block.timestamp);
             // Curve stays live and fully backed: holders can still exit.
             (,,,,,,,,, bool graduated) = pad.curves(address(t));

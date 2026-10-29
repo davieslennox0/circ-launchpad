@@ -97,9 +97,10 @@ contract ForkLifecycleTest is ForkBase {
         vm.prank(alice);
         vm.expectRevert(bytes4(keccak256("NotHolder()")));
         pad.claimCreator(container, quote, false);
+        uint256 cBefore = IERC20(quote).balanceOf(container); // real Containers may already hold funds
         vm.prank(creator);
         pad.claimCreator(container, quote, false);
-        assertEq(IERC20(quote).balanceOf(container), c, "fees landed in the Container");
+        assertEq(IERC20(quote).balanceOf(container) - cBefore, c, "fees landed in the Container");
 
         uint256 lc = locker.accrued(address(t), container);
         uint256 before = t.balanceOf(creator);
