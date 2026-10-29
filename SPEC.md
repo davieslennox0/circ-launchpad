@@ -21,6 +21,23 @@ Both targets are hit exactly; see `script/solve_constants.py` and `script/CurveC
    Before GATE 2: run Slither and fix or justify every finding, and have an independent reviewer (who didn't write the code)
    audit CurvePad, LaunchToken and PositionLocker against this file.
 
+**A3. Code size (2026-10-29).** No size-check bypass. CurvePad deploys two admin-less helpers in its constructor, so the
+wiring is immutable and set at deploy time:
+- **TokenDeployer** does the CREATE2 deploy of LaunchToken. LaunchToken takes CurvePad as its controller explicitly
+  (`markGraduated` is CurvePad-only), and `predictedPool` depends only on the token's own address.
+- **Graduator** handles pool get/create, normalisation, the full-range mint and sending the NFT to PositionLocker.
+  Only CurvePad can call it, and it holds no funds between calls.
+
+PositionLocker accepts NFTs only from CurvePad's Graduator. CI fails if any runtime is over 24,576 B or any initcode is
+over 49,152 B.
+
+**A4. Graduation decoupled from the filling buy (2026-10-29, replaces 6.2 "graduate(token) is internal").**
+- The buy that sells the last curve token marks the curve **Complete** and emits `CurveCompleted(token)`. No more buys
+  or sells after that.
+- `graduate(token)` is permissionless and callable once the curve is Complete. It is retryable: if it reverts (for
+  example `NormalizeTooCostly` on a griefed pool), the curve stays Complete and its funds stay in CurvePad.
+- Lifecycle: Trading → Complete → Graduated.
+
 ---
 
 ## 0. Process

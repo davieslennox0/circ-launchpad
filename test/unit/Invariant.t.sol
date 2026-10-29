@@ -7,8 +7,8 @@ import {UnitBase} from "./Base.t.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
 
-/// @dev Random buys, sells, transfers and claims across a WOKB curve and a BEM curve (stops short of graduation,
-/// which needs real Uniswap v3 and is covered by the fork suite).
+/// @dev Random buys, sells, transfers and claims across a WOKB curve and a BEM curve, plus filling a curve to Complete.
+/// graduate() needs real Uniswap v3 and is covered by the fork suite.
 contract PadHandler is Test {
     CurvePad pad;
     LaunchToken[2] public tokens;
@@ -36,7 +36,7 @@ contract PadHandler is Test {
         if (IERC20(quotes[which]).balanceOf(a) < amount) return;
         (,,,, uint128 left,,,,,) = pad.curves(address(tokens[which]));
         (uint256 out,) = pad.previewBuy(address(tokens[which]), amount);
-        if (out == 0 || out >= left) return; // never trigger graduation here
+        if (_closed(which) || out == 0 || out >= left) return; // completion only via fill()
         vm.prank(a);
         pad.buy(address(tokens[which]), amount, 0, block.timestamp);
     }
@@ -46,7 +46,7 @@ contract PadHandler is Test {
         address a = actors[who % 3];
         uint256 bal = tokens[which].balanceOf(a);
         uint256 amt = bal * bound(frac, 1, 100) / 100;
-        if (amt == 0 || pad.previewSell(address(tokens[which]), amt) == 0) return;
+        if (_closed(which) || amt == 0 || pad.previewSell(address(tokens[which]), amt) == 0) return;
         vm.startPrank(a);
         tokens[which].approve(address(pad), amt);
         pad.sell(address(tokens[which]), amt, 0, block.timestamp);
@@ -70,6 +70,28 @@ contract PadHandler is Test {
             vm.prank(creator);
             pad.claimCreator(which % 2 == 0 ? container0 : container1, q, route == 3);
         }
+    }
+
+    /// @dev Buy out the rest of a curve (-> Complete), then check trading is closed.
+    function fill(uint256 who, uint256 which) external {
+        which %= 2;
+        if (_closed(which)) return;
+        address a = actors[who % 3];
+        address t = address(tokens[which]);
+        (, uint256 need) = pad.previewBuy(t, type(uint128).max);
+        if (IERC20(quotes[which]).balanceOf(a) < need) return;
+        vm.roll(block.number + pad.GUARD_BLOCKS()); // past anti-snipe
+        vm.prank(a);
+        pad.buy(t, need, 0, block.timestamp);
+        assertTrue(_closed(which), "filled curve is Complete");
+        vm.prank(a);
+        vm.expectRevert(CurvePad.CurveClosed.selector);
+        pad.buy(t, 1e6, 0, block.timestamp);
+    }
+
+    function _closed(uint256 which) internal view returns (bool) {
+        (,,,,,,,,, CurvePad.Status st) = pad.curves(address(tokens[which]));
+        return st != CurvePad.Status.Trading;
     }
 
     function roll(uint256 blocks) external {

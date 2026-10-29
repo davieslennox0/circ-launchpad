@@ -29,6 +29,13 @@ contract CurvePad is FeeVault {
         uint128 lpTokens;
     }
 
+    /// @dev Trading -> Complete (the buy that sells the last curve token) -> Graduated (permissionless `graduate`).
+    enum Status {
+        Trading,
+        Complete,
+        Graduated
+    }
+
     struct Curve {
         address quote;
         uint128 vQuote;
@@ -39,7 +46,7 @@ contract CurvePad is FeeVault {
         address circuitNft;
         uint256 circuitId;
         uint64 launchBlock;
-        bool graduated;
+        Status status;
     }
 
     struct Params {
@@ -102,12 +109,16 @@ contract CurvePad is FeeVault {
         uint256 vQuote,
         uint256 vToken
     );
+    /// @notice The curve sold out. Trading is closed; anyone can now call `graduate(token)`.
+    event CurveCompleted(address indexed token);
     event Graduated(address indexed token, address indexed pool, uint256 positionId, uint256 raised, uint256 lpTokens);
 
     error BadConfig();
     error BadQuote();
     error NotTapeOut();
     error UnknownLaunch();
+    error CurveClosed();
+    error NotComplete();
     error AlreadyGraduated();
     error Expired();
     error ZeroAmount();
@@ -204,7 +215,7 @@ contract CurvePad is FeeVault {
             circuitNft: circuitNft,
             circuitId: circuitId,
             launchBlock: uint64(block.number),
-            graduated: false
+            status: Status.Trading
         });
         emit LaunchCreated(token, quote, circuitNft, circuitId, container, msg.sender);
     }
@@ -251,7 +262,7 @@ contract CurvePad is FeeVault {
     {
         _checkDeadline(deadline);
         Curve storage c = _curve(token);
-        if (c.graduated) revert AlreadyGraduated();
+        if (c.status != Status.Trading) revert CurveClosed();
         if (tokensIn == 0) revert ZeroAmount();
 
         uint256 out = CurveMath.quoteOut(c.vQuote, c.vToken, tokensIn);
@@ -302,7 +313,7 @@ contract CurvePad is FeeVault {
     /// @dev Quote for this buy is already held by the pad. Returns the gross quote consumed (fee included).
     function _buy(address token, uint256 quoteIn, uint256 minTokensOut, bool exempt) internal returns (uint256 used) {
         Curve storage c = _curve(token);
-        if (c.graduated) revert AlreadyGraduated();
+        if (c.status != Status.Trading) revert CurveClosed();
 
         uint256 fee = CurveMath.feeOn(quoteIn);
         uint256 net = quoteIn - fee;
@@ -329,13 +340,26 @@ contract CurvePad is FeeVault {
         IERC20(token).safeTransfer(msg.sender, out);
         emit Trade(token, msg.sender, true, used, out, fee, c.vQuote, c.vToken);
 
-        if (c.tokensLeft == 0) _graduate(token, c);
+        if (c.tokensLeft == 0) {
+            c.status = Status.Complete;
+            emit CurveCompleted(token);
+        }
+    }
+
+    /// @notice Graduate a Complete curve into its locked Uniswap v3 position. Permissionless. If it reverts (for example
+    /// NormalizeTooCostly on a griefed pool) nothing changes: the curve stays Complete, its funds stay here, and anyone
+    /// can retry once the pool is fixable.
+    function graduate(address token) external nonReentrant {
+        Curve storage c = _curve(token);
+        if (c.status == Status.Graduated) revert AlreadyGraduated();
+        if (c.status != Status.Complete) revert NotComplete();
+        _graduate(token, c);
     }
 
     /// @dev Unlocks the token, hands the LP tokens and the raise to Graduator for pool setup and the locked mint, and books
     /// whatever quote comes back (normalisation proceeds and rounding) to the protocol.
     function _graduate(address token, Curve storage c) internal {
-        c.graduated = true;
+        c.status = Status.Graduated;
         address quote = c.quote;
         uint256 quoteAmt = c.realQuote;
         c.realQuote = 0;

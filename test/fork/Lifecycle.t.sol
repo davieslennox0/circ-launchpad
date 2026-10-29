@@ -43,15 +43,14 @@ contract ForkLifecycleTest is ForkBase {
         }
 
         uint256 accruedBefore = pad.totalAccrued(quote);
-        (uint256 positionId, address pool) = _graduate(t, alice);
+        _complete(t, alice);
+        _assertSolvent(ts, quote); // Complete: funds still in the pad
+        (uint256 positionId, address pool) = _graduateNow(t);
         _assertSolvent(ts, quote);
 
         // Curve closed.
-        (,,,,,,,,, bool graduated) = pad.curves(address(t));
-        assertTrue(graduated);
-        assertTrue(t.graduated());
         vm.prank(alice);
-        vm.expectRevert(CurvePad.AlreadyGraduated.selector);
+        vm.expectRevert(CurvePad.CurveClosed.selector);
         pad.buy(address(t), unit, 0, block.timestamp);
 
         // Pool opens at the curve's final price (within 0.1%).
@@ -86,10 +85,12 @@ contract ForkLifecycleTest is ForkBase {
         IERC20(quote).transfer(address(this), unit);
         _poolSwap(pool, quote, unit);
 
+        uint256 lockTokBefore = t.balanceOf(address(locker));
+        uint256 lockQuoteBefore = IERC20(quote).balanceOf(address(locker));
         locker.collect(positionId);
         assertEq(_positionLiquidity(positionId), liq, "collect never touches liquidity");
-        _checkLockerSplit(address(t), container);
-        _checkLockerSplit(quote, container);
+        _checkLockerSplit(address(t), container, lockTokBefore);
+        _checkLockerSplit(quote, container, lockQuoteBefore);
 
         // Creator fees: holder may route to the Container or (fallback) to their wallet; nobody else may.
         uint256 c = pad.accrued(quote, container);
@@ -113,7 +114,8 @@ contract ForkLifecycleTest is ForkBase {
         assertEq(pad.totalAccrued(quote), 0);
     }
 
-    function _checkLockerSplit(address asset, address container) internal view {
+    /// @param balBefore the locker's balance before collect: forge's default deploy address can hold real funds on a fork.
+    function _checkLockerSplit(address asset, address container, uint256 balBefore) internal view {
         uint256 total = locker.totalAccrued(asset);
         assertGt(total, 0, "fees collected");
         uint256 toC = locker.accrued(asset, container);
@@ -122,7 +124,7 @@ contract ForkLifecycleTest is ForkBase {
         assertEq(toC + toS + toP, total);
         assertEq(toC, total * 5_000 / 10_000);
         assertEq(toS, total * 2_000 / 10_000);
-        assertEq(IERC20(asset).balanceOf(address(locker)), total);
+        assertEq(IERC20(asset).balanceOf(address(locker)) - balBefore, total);
     }
 
     function _predictV3(address token, address quote) internal pure returns (address) {
