@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/// @notice X Layer mainnet (chain 196) addresses. Every entry was checked for code on 2026-10-29 (RECON.md).
+library Addresses {
+    // Uniswap v3, source: https://developers.uniswap.org/docs/protocols/v3/deployments/v3-xlayer-deployments
+    address internal constant V3_FACTORY = 0x4B2ab38DBF28D31D467aA8993f6c2585981D6804;
+    address internal constant NPM = 0x315e413A11AB0df498eF83873012430ca36638Ae;
+    address internal constant SWAP_ROUTER02 = 0x4f0C28f5926AFDA16bf2506D5D9e57Ea190f9bcA;
+
+    // Quote assets
+    address internal constant WOKB = 0xe538905cf8410324e03A5A23C1c177a474D59b2b; // NPM.WETH9()
+    /// BEM: LayerZero OFT bridged from BSC, 8 decimals. Owned (upgradeable peers/config) by the TapeOut 3-of-5 Safe below.
+    address internal constant BEM = 0x60e62Efa9405d6873C5deaBD4E6CC91c25363952;
+
+    // TapeOut (sources: tapeout.net bundle L2_FACTORY, on-chain reads; RECON.md section 3)
+    address internal constant CIRCUIT_FACTORY = 0x1f09DAeFA827f02CBb40967cc91b259763760761;
+    address internal constant ERC6551_REGISTRY = 0x000000006551c19487814612e58FE06813775758;
+    address internal constant CONTAINER_IMPL = 0xAC4F791353eE9F06e2C50Ae4C34680D28Ea52a57;
+    address internal constant CONTAINER_OPENER = 0x536adD8F30f03b69f6fbF29d425A816A0dC50106;
+    address internal constant TAPEOUT_SAFE = 0xB3D85b42A045c1A88D800CAD0F55d2566a4D3138;
+
+    // Fork fixtures: Nandout processor and the holder of its circuits #1-#5
+    address internal constant NANDOUT = 0x8A60B4A4BCf4066F5E5F9A406fE09c5e4f52a58E;
+    address internal constant NANDOUT_HOLDER = 0x934d315C0a9C0866D393B722C1805F2B6b20b816;
+    address internal constant BEM_WOKB_POOL = 0x2CcF8aa17F5DF9Fb5D51C9de12135a913fF29f7A;
+}

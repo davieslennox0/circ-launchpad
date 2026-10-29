@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {Script, console2} from "forge-std/Script.sol";
+import {Vm} from "forge-std/Vm.sol";
+import {CurvePad} from "../src/CurvePad.sol";
+import {PositionLocker} from "../src/PositionLocker.sol";
+import {INonfungiblePositionManager} from "../src/interfaces/IUniswapV3.sol";
+import {Addresses} from "./Addresses.sol";
+import {CurveConstants} from "./CurveConstants.sol";
+
+/// @notice Shared X Layer wiring for the deploy script and fork tests.
+library CircDeploy {
+    Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+
+    /// @dev Deploys PositionLocker then CurvePad from `deployer`, whose next two nonces must be these two creates.
+    function deploy(address deployer, address protocol, address sink)
+        internal
+        returns (CurvePad pad, PositionLocker locker)
+    {
+        address predictedPad = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 1);
+        locker = new PositionLocker(INonfungiblePositionManager(Addresses.NPM), predictedPad, protocol, sink);
+        pad = new CurvePad(params(address(locker), protocol, sink));
+        require(address(pad) == predictedPad, "pad address mismatch");
+    }
+
+    function params(address locker, address protocol, address sink) internal pure returns (CurvePad.Params memory) {
+        return CurvePad.Params({
+            wokb: Addresses.WOKB,
+            bem: Addresses.BEM,
+            wokbConfig: CurveConstants.wokb(),
+            bemConfig: CurveConstants.bem(),
+            circuitFactory: Addresses.CIRCUIT_FACTORY,
+            registry: Addresses.ERC6551_REGISTRY,
+            containerImpl: Addresses.CONTAINER_IMPL,
+            v3Factory: Addresses.V3_FACTORY,
+            npm: Addresses.NPM,
+            locker: locker,
+            protocol: protocol,
+            sink: sink
+        });
+    }
+}
+
+/// @notice Deploys PositionLocker, then CurvePad, wired to each other.
+/// Env: PRIVATE_KEY (deployer), CIRC_PROTOCOL (protocol treasury), CIRC_SINK (ecosystem sink).
+/// Dry run: forge script script/Deploy.s.sol --fork-url $XLAYER_RPC_URL
+/// Never add --broadcast against mainnet without the owner's explicit go-ahead.
+contract Deploy is Script {
+    function run() external returns (CurvePad pad, PositionLocker locker) {
+        require(block.chainid == 196 || block.chainid == 31337, "X Layer mainnet or local fork only");
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        address deployer = vm.addr(pk);
+        address protocol = vm.envAddress("CIRC_PROTOCOL");
+        address sink = vm.envAddress("CIRC_SINK");
+
+        vm.startBroadcast(pk);
+        (pad, locker) = CircDeploy.deploy(deployer, protocol, sink);
+        vm.stopBroadcast();
+
+        console2.log("PositionLocker", address(locker));
+        console2.log("CurvePad      ", address(pad));
+        console2.log("protocol      ", protocol);
+        console2.log("sink          ", sink);
+    }
+}

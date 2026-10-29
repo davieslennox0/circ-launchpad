@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FOUNDRY_PROFILE: default
+  XLAYER_RPC_URL: https://rpc.xlayer.tech
+
+jobs:
+  unit:
+    name: Unit + invariant tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: forge --version
+      - run: forge build --sizes
+      - run: forge test --match-path "test/unit/*" -vvv
+
+  fork:
+    name: Fork tests (X Layer mainnet) + gas report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: forge test --match-path "test/fork/*" -vvv --gas-report
+
+  slither:
+    name: Slither
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install slither-analyzer==0.10.4
+      - name: Run Slither (report only; findings are triaged by hand)
+        run: slither . --filter-paths "lib/|test/|script/|src/libraries/uniswap/" --exclude-dependencies || true
+
+  deploy-dry-run:
+    name: Deploy dry run (fork, no broadcast)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Simulate Deploy.s.sol against a mainnet fork with a throwaway key
+        env:
+          # anvil's well-known test key #0; never funded on mainnet, simulation only
+          PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+          CIRC_PROTOCOL: "0x000000000000000000000000000000000000dEaD"
+          CIRC_SINK: "0x000000000000000000000000000000000000bEEF"
+        run: forge script script/Deploy.s.sol --fork-url "$XLAYER_RPC_URL" -vvv
