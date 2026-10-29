@@ -85,15 +85,15 @@ abstract contract UnitBase is Test {
     function _curve(address token)
         internal
         view
-        returns (uint256 vQuote, uint256 vToken, uint256 realQuote, uint256 tokensLeft, bool graduated)
+        returns (uint256 vQuote, uint256 vToken, uint256 realQuote, uint256 tokensLeft, CurvePad.Status status)
     {
         address q;
         uint128 a;
         uint128 b;
         uint128 r;
         uint128 l;
-        (q, a, b, r, l,,,,, graduated) = pad.curves(token);
-        return (a, b, r, l, graduated);
+        (q, a, b, r, l,,,,, status) = pad.curves(token);
+        return (a, b, r, l, status);
     }
 
     function _skipGuard() internal {

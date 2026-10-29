@@ -6,8 +6,9 @@ Circ is a launchpad on X Layer (chain 196) for tokens bound to TapeOut Circuit N
   Supply is fixed at 1B, with no owner and no mint.
 - **Curve:** each token trades on a virtual constant-product bonding curve held in a single `CurvePad` contract.
   The quote asset is WOKB (native OKB accepted) or BEM.
-- **Graduation:** when the curve sells out, the raise and the reserved tokens seed a full-range Uniswap v3 position
-  (1% fee tier). The position is locked forever in `PositionLocker`.
+- **Graduation:** the buy that sells out the curve marks it Complete and emits `CurveCompleted`. Trading closes at
+  that point. Anyone can then call `graduate(token)`, which seeds a full-range Uniswap v3 position (1% fee tier) with
+  the raise and the reserved tokens. The position is locked forever in `PositionLocker`.
 - **Fees:** curve fees (1%) and LP fees are split 50% to the Circuit's TapeOut Container, 30% to the protocol and 20% to
   an ecosystem sink.
   - Fees are pull-based.
@@ -38,6 +39,8 @@ src/CurvePad.sol         create / buy / sell / graduate, fee accrual (singleton)
 src/LaunchToken.sol      fixed-supply ERC-20, v3 pool locked until graduation
 src/PositionLocker.sol   holds LP NFTs forever, permissionless fee collect + split
 src/FeeVault.sol         pull-based fee accounting shared by both
+src/TokenDeployer.sol    CREATE2 LaunchToken factory, deployed by CurvePad
+src/Graduator.sol        pool setup, price normalisation, locked mint; deployed by CurvePad
 test/unit/               mocks, fuzz and invariant tests
 test/fork/               X Layer mainnet fork tests against real Uniswap v3 / TapeOut
 script/Deploy.s.sol      deploys PositionLocker then CurvePad

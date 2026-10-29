@@ -5,20 +5,27 @@ import {UnitBase} from "./Base.t.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
 import {FeeVault} from "../../src/FeeVault.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
+import {TokenDeployer} from "../../src/TokenDeployer.sol";
+import {Graduator} from "../../src/Graduator.sol";
+import {PositionLocker} from "../../src/PositionLocker.sol";
 import {CurveConstants} from "../../script/CurveConstants.sol";
+
+interface IERC20Like {
+    function balanceOf(address) external view returns (uint256);
+}
 
 contract CurvePadUnitTest is UnitBase {
     // ------------------------------------------------------------- create
 
     function test_create_bindsCircuitAndContainer() public {
         LaunchToken t = _launch(address(wokb));
-        (address q,,,,, address container, address cnft, uint256 cid, uint64 lb, bool g) = pad.curves(address(t));
+        (address q,,,,, address container, address cnft, uint256 cid, uint64 lb, CurvePad.Status g) = pad.curves(address(t));
         assertEq(q, address(wokb));
         assertEq(container, _container(1));
         assertEq(cnft, address(nft));
         assertEq(cid, 1);
         assertEq(lb, block.number);
-        assertFalse(g);
+        assertEq(uint8(g), uint8(CurvePad.Status.Trading));
         assertEq(t.totalSupply(), 1e27);
         assertEq(t.balanceOf(address(pad)), 1e27);
         (address rn, uint256 rid) = pad.circuitOf(container);
@@ -348,6 +355,134 @@ contract CurvePadUnitTest is UnitBase {
         (bool ok,) = address(pad).call{value: 1}("");
         assertFalse(ok);
     }
+
+    // ------------------------------------------------------------- completion
+
+    function _fill(LaunchToken t, address who) internal returns (uint256 spent) {
+        _skipGuard();
+        (, uint256 need) = pad.previewBuy(address(t), type(uint128).max);
+        address q = _quoteOf(t);
+        uint256 before = IERC20Like(q).balanceOf(who);
+        vm.prank(who);
+        pad.buy(address(t), need * 2, 0, block.timestamp); // overshoot: excess refunded
+        spent = before - IERC20Like(q).balanceOf(who);
+        assertEq(spent, need, "capped buy spends exactly the remaining curve");
+    }
+
+    function _quoteOf(LaunchToken t) internal view returns (address q) {
+        (q,,,,,,,,,) = pad.curves(address(t));
+    }
+
+    function test_fillingBuy_marksCompleteAndDoesNotGraduate() public {
+        LaunchToken t = _launch(address(wokb));
+        vm.expectEmit(true, false, false, false, address(pad));
+        emit CurvePad.CurveCompleted(address(t));
+        _fill(t, alice);
+        (,, uint256 real, uint256 left, CurvePad.Status st) = _curve(address(t));
+        assertEq(left, 0);
+        assertEq(uint8(st), uint8(CurvePad.Status.Complete));
+        assertFalse(t.graduated(), "token stays locked until graduate()");
+        assertEq(t.balanceOf(address(pad)), CurveConstants.LP_TOKENS, "LP reserve still in the pad");
+        assertGe(wokb.balanceOf(address(pad)), real + pad.totalAccrued(address(wokb)), "funds stay in the pad");
+        assertEq(t.balanceOf(alice), CurveConstants.CURVE_SUPPLY);
+    }
+
+    function test_complete_tradesRevert() public {
+        LaunchToken t = _launch(address(wokb));
+        _fill(t, alice);
+        vm.startPrank(bob);
+        vm.expectRevert(CurvePad.CurveClosed.selector);
+        pad.buy(address(t), 1 ether, 0, block.timestamp);
+        vm.expectRevert(CurvePad.CurveClosed.selector);
+        pad.buyWithOKB{value: 1 ether}(address(t), 0, block.timestamp);
+        vm.stopPrank();
+        vm.startPrank(alice);
+        t.approve(address(pad), 1 ether);
+        vm.expectRevert(CurvePad.CurveClosed.selector);
+        pad.sell(address(t), 1 ether, 0, block.timestamp);
+        vm.stopPrank();
+    }
+
+    function test_bem_fillingBuy_marksComplete() public {
+        LaunchToken t = _launch(address(bem));
+        _fill(t, alice);
+        (,,,, CurvePad.Status st) = _curve(address(t));
+        assertEq(uint8(st), uint8(CurvePad.Status.Complete));
+    }
+
+    function test_devBuyCanCompleteCurve() public {
+        vm.prank(creator);
+        LaunchToken t =
+            LaunchToken(pad.createLaunch{value: 1_000 ether}(address(nft), 1, "X", "X", address(wokb), 0, 0));
+        (,,, uint256 left, CurvePad.Status st) = _curve(address(t));
+        assertEq(left, 0);
+        assertEq(uint8(st), uint8(CurvePad.Status.Complete));
+    }
+
+    function test_graduate_requiresComplete() public {
+        LaunchToken t = _launch(address(wokb));
+        vm.expectRevert(CurvePad.NotComplete.selector);
+        pad.graduate(address(t));
+        vm.expectRevert(CurvePad.UnknownLaunch.selector);
+        pad.graduate(address(0xdead));
+    }
+
+    // ------------------------------------------------------------- helpers wiring
+
+    function test_helpers_deployedAndOwnedByPad() public view {
+        TokenDeployer d = pad.tokenDeployer();
+        Graduator g = pad.graduator();
+        assertEq(d.pad(), address(pad));
+        assertEq(d.v3Factory(), V3_FACTORY);
+        assertEq(g.pad(), address(pad));
+        assertEq(address(g.v3Factory()), V3_FACTORY);
+        assertEq(address(g.npm()), npm);
+        assertEq(g.locker(), address(locker));
+    }
+
+    function test_tokenDeployer_onlyPad() public {
+        TokenDeployer d = pad.tokenDeployer();
+        vm.prank(alice);
+        vm.expectRevert(TokenDeployer.OnlyPad.selector);
+        d.deploy(bytes32(0), "X", "X", address(wokb));
+    }
+
+    function test_graduator_onlyPad() public {
+        Graduator g = pad.graduator();
+        vm.prank(alice);
+        vm.expectRevert(Graduator.OnlyPad.selector);
+        g.graduate(address(1), address(wokb), 1, 1, 0, 0, "");
+    }
+
+    function test_graduator_callbackRejectsStrangers() public {
+        Graduator g = pad.graduator();
+        vm.expectRevert(Graduator.BadCallback.selector);
+        g.uniswapV3SwapCallback(1, 0, abi.encode(address(wokb), address(bem)));
+    }
+
+    function test_token_controllerIsPad_andAddressFromDeployer() public {
+        LaunchToken t = _launch(address(wokb));
+        assertEq(t.pad(), address(pad), "pad controls the token");
+        assertEq(t.balanceOf(address(pad)), 1e27, "full supply minted to pad");
+        bytes32 salt = keccak256(abi.encode(creator, address(nft), uint256(1)));
+        bytes memory init = abi.encodePacked(
+            type(LaunchToken).creationCode, abi.encode("Circ Test", "CT", address(wokb), V3_FACTORY, address(pad))
+        );
+        assertEq(address(t), vm.computeCreate2Address(salt, keccak256(init), address(pad.tokenDeployer())));
+        vm.prank(address(pad.tokenDeployer()));
+        vm.expectRevert(LaunchToken.OnlyPad.selector);
+        t.markGraduated();
+    }
+
+    function test_locker_rejectsNftsNotFromGraduator() public {
+        vm.prank(npm);
+        vm.expectRevert(PositionLocker.NotPad.selector);
+        locker.onERC721Received(address(pad), address(pad), 1, abi.encode(address(0), address(0), address(0), 0));
+        address g = address(pad.graduator()); // resolve before prank: an external call would consume it
+        vm.prank(npm);
+        locker.onERC721Received(g, g, 1, abi.encode(address(1), address(2), address(nft), 1));
+        assertEq(locker.containerOf(1), address(2));
+    }
 }
 
 /// @dev Minimal stand-in exposing pad()/npm() so the constructor reaches the config check.
@@ -359,4 +494,5 @@ contract PositionLocker2 {
         npm = n;
         pad = p;
     }
+
 }

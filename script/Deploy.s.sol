@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Script, console2} from "forge-std/Script.sol";
-import {Vm} from "forge-std/Vm.sol";
+import {Vm, VmSafe} from "forge-std/Vm.sol";
 import {CurvePad} from "../src/CurvePad.sol";
 import {PositionLocker} from "../src/PositionLocker.sol";
 import {INonfungiblePositionManager} from "../src/interfaces/IUniswapV3.sol";
@@ -47,10 +47,19 @@ library CircDeploy {
 /// Dry run: forge script script/Deploy.s.sol --fork-url $XLAYER_RPC_URL
 /// Never add --broadcast against mainnet without the owner's explicit go-ahead.
 contract Deploy is Script {
+    /// @dev Foundry's default script sender.
+    address internal constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38;
+    string internal constant ANVIL_MNEMONIC = "test test test test test test test test test test test junk";
+
+    error DefaultKeyOnMainnet(address broadcaster);
+
     function run() external returns (CurvePad pad, PositionLocker locker) {
         require(block.chainid == 196 || block.chainid == 31337, "X Layer mainnet or local fork only");
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(pk);
+        bool broadcasting =
+            vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume);
+        if (broadcasting && block.chainid == 196) _requireNotDefaultKey(deployer);
         address protocol = vm.envAddress("CIRC_PROTOCOL");
         address sink = vm.envAddress("CIRC_SINK");
 
@@ -62,5 +71,14 @@ contract Deploy is Script {
         console2.log("CurvePad      ", address(pad));
         console2.log("protocol      ", protocol);
         console2.log("sink          ", sink);
+    }
+
+    /// @dev Refuse a mainnet broadcast from any publicly known key: the Foundry default sender or the first 20 accounts of
+    /// anvil's default mnemonic.
+    function _requireNotDefaultKey(address broadcaster) internal pure {
+        if (broadcaster == FOUNDRY_DEFAULT_SENDER) revert DefaultKeyOnMainnet(broadcaster);
+        for (uint32 i; i < 20; ++i) {
+            if (broadcaster == vm.addr(vm.deriveKey(ANVIL_MNEMONIC, i))) revert DefaultKeyOnMainnet(broadcaster);
+        }
     }
 }

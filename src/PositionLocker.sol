@@ -5,6 +5,10 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 import {FeeVault} from "./FeeVault.sol";
 import {INonfungiblePositionManager} from "./interfaces/IUniswapV3.sol";
 
+interface ICurvePadGraduator {
+    function graduator() external view returns (address);
+}
+
 /// @title PositionLocker
 /// @notice Holds graduated Uniswap v3 LP NFTs forever. There is no path to decrease liquidity, burn, or move a
 /// position out; no owner; no upgrade. Anyone may collect swap fees, which are split like curve fees.
@@ -29,12 +33,13 @@ contract PositionLocker is FeeVault, IERC721Receiver {
         pad = pad_;
     }
 
-    /// @dev Only position NFTs sent by CurvePad through the position manager are accepted.
+    /// @dev Only position NFTs sent by CurvePad's Graduator through the position manager are accepted.
     function onERC721Received(address operator, address from, uint256 positionId, bytes calldata data)
         external
         returns (bytes4)
     {
-        if (msg.sender != address(npm) || operator != pad || from != pad) revert NotPad();
+        address graduator = ICurvePadGraduator(pad).graduator();
+        if (msg.sender != address(npm) || operator != graduator || from != graduator) revert NotPad();
         (address token, address container, address nft, uint256 circuitId) =
             abi.decode(data, (address, address, address, uint256));
         containerOf[positionId] = container;

@@ -41,7 +41,17 @@ abstract contract ForkBase is Test {
         if (blk == 0) vm.createSelectFork(rpc);
         else vm.createSelectFork(rpc, blk);
 
-        (pad, locker) = CircDeploy.deploy(address(this), protocol, sink);
+        // Fresh deployer, so the locker and pad land on addresses that can't already hold mainnet funds.
+        // (Forge's default sender deploys to 0x5615...b72f, which holds 0.12 WOKB on X Layer.)
+        address deployer = makeAddr("circDeployer");
+        vm.startPrank(deployer);
+        (pad, locker) = CircDeploy.deploy(deployer, protocol, sink);
+        vm.stopPrank();
+        address[4] memory fresh = [address(pad), address(locker), address(pad.graduator()), address(pad.tokenDeployer())];
+        for (uint256 i; i < fresh.length; ++i) {
+            assertEq(wokb.balanceOf(fresh[i]), 0, "fresh deploy holds no WOKB");
+            assertEq(bem.balanceOf(fresh[i]), 0, "fresh deploy holds no BEM");
+        }
         assertEq(ICircuitNFT(Addresses.NANDOUT).ownerOf(1), creator, "fixture: Nandout #1 holder");
 
         address[4] memory users = [alice, bob, attacker, creator];
@@ -84,15 +94,37 @@ abstract contract ForkBase is Test {
         return uint160(Math.sqrt(ratioX192));
     }
 
-    /// @dev Buys until the curve sells out; returns the Graduated event's position id and pool.
-    function _graduate(LaunchToken t, address buyer) internal returns (uint256 positionId, address pool) {
+    /// @dev The filling buy: sells the rest of the curve, which must leave it Complete (not graduated) with trading closed.
+    function _complete(LaunchToken t, address buyer) internal {
         (,,,, uint128 left,,,,,) = pad.curves(address(t));
-        (address quote,,,,,,,,,) = pad.curves(address(t));
-        (, uint256 need) = pad.previewBuy(address(t), type(uint128).max);
         assertGt(left, 0);
-        vm.recordLogs();
+        (, uint256 need) = pad.previewBuy(address(t), type(uint128).max);
+        vm.expectEmit(true, false, false, false, address(pad));
+        emit CurvePad.CurveCompleted(address(t));
         vm.prank(buyer);
         pad.buy(address(t), need, 0, block.timestamp);
+
+        CurvePad.Status st;
+        (,,,, left,,,,, st) = pad.curves(address(t));
+        assertEq(left, 0);
+        assertEq(uint8(st), uint8(CurvePad.Status.Complete), "filling buy -> Complete");
+        assertFalse(t.graduated(), "filling buy does not graduate");
+        vm.prank(bob);
+        vm.expectRevert(CurvePad.CurveClosed.selector);
+        pad.buy(address(t), 1e6, 0, block.timestamp);
+        vm.startPrank(buyer);
+        t.approve(address(pad), 1 ether);
+        vm.expectRevert(CurvePad.CurveClosed.selector);
+        pad.sell(address(t), 1 ether, 0, block.timestamp);
+        vm.stopPrank();
+    }
+
+    /// @dev Permissionless graduate() by a third-party keeper; returns the Graduated event's position id and pool.
+    function _graduateNow(LaunchToken t) internal returns (uint256 positionId, address pool) {
+        (address quote,,,,,,,,,) = pad.curves(address(t));
+        vm.recordLogs();
+        vm.prank(makeAddr("keeper"));
+        pad.graduate(address(t));
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bytes32 sig = keccak256("Graduated(address,address,uint256,uint256,uint256)");
         for (uint256 i; i < logs.length; ++i) {
@@ -103,6 +135,31 @@ abstract contract ForkBase is Test {
         }
         assertTrue(pool != address(0), "graduated");
         assertEq(pool, factory.getPool(address(t), quote, 10_000));
+        (,,,,,,,,, CurvePad.Status st) = pad.curves(address(t));
+        assertEq(uint8(st), uint8(CurvePad.Status.Graduated));
+        assertTrue(t.graduated());
+        _assertGraduatorEmpty(address(t), quote);
+        vm.expectRevert(CurvePad.AlreadyGraduated.selector);
+        pad.graduate(address(t));
+    }
+
+    /// @dev Filling buy, then graduate().
+    function _graduate(LaunchToken t, address buyer) internal returns (uint256 positionId, address pool) {
+        _complete(t, buyer);
+        return _graduateNow(t);
+    }
+
+    /// @dev Graduator must hold nothing between calls.
+    function _assertGraduatorEmpty(address token, address quote) internal view {
+        address g = address(pad.graduator());
+        assertEq(IERC20(token).balanceOf(g), 0, "graduator token balance");
+        assertEq(IERC20(quote).balanceOf(g), 0, "graduator quote balance");
+        assertEq(IERC20(Addresses.WOKB).balanceOf(g), 0, "graduator WOKB balance");
+        assertEq(IERC20(Addresses.BEM).balanceOf(g), 0, "graduator BEM balance");
+        assertEq(g.balance, 0, "graduator native balance");
+        (bool ok, bytes memory r) = address(npm).staticcall(abi.encodeWithSignature("balanceOf(address)", g));
+        require(ok);
+        assertEq(abi.decode(r, (uint256)), 0, "graduator holds no position NFT");
     }
 
     function _positionLiquidity(uint256 positionId) internal view returns (uint128 liq) {
