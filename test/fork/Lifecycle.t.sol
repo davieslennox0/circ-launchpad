@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {Vm} from "forge-std/Vm.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ForkBase, IPoolLiquidity} from "./ForkBase.t.sol";
@@ -45,6 +46,7 @@ contract ForkLifecycleTest is ForkBase {
         uint256 accruedBefore = pad.totalAccrued(quote);
         _complete(t, alice);
         _assertSolvent(ts, quote); // Complete: funds still in the pad
+        uint256 poolQuoteBefore = IERC20(quote).balanceOf(t.predictedPool());
         (uint256 positionId, address pool) = _graduateNow(t);
         _assertSolvent(ts, quote);
 
@@ -70,7 +72,7 @@ contract ForkLifecycleTest is ForkBase {
         assertEq(IPoolLiquidity(pool).liquidity(), liq, "only our position is in range");
         assertEq(t.balanceOf(address(pad)), 0, "dust burned");
         assertApproxEqRel(t.totalSupply(), 1e27, 0.0001e18);
-        uint256 raised = IERC20(quote).balanceOf(pool);
+        uint256 raised = IERC20(quote).balanceOf(pool) - poolQuoteBefore;
         uint256 rTarget = Math.mulDiv(
             _vQuote0(quote), CurveConstants.V_TOKEN0, CurveConstants.V_TOKEN0 - CurveConstants.CURVE_SUPPLY
         ) - _vQuote0(quote);
@@ -85,12 +87,24 @@ contract ForkLifecycleTest is ForkBase {
         IERC20(quote).transfer(address(this), unit);
         _poolSwap(pool, quote, unit);
 
+        // Someone donates quote to the locker before the collect. Splits must come from what positionManager.collect
+        // returns, never from balanceOf, so the donation must not reach this position's Container (or anyone).
+        uint256 donation = unit;
+        vm.prank(bob);
+        IERC20(quote).transfer(address(locker), donation);
+
         uint256 lockTokBefore = t.balanceOf(address(locker));
         uint256 lockQuoteBefore = IERC20(quote).balanceOf(address(locker));
+        vm.recordLogs();
         locker.collect(positionId);
+        (uint256 collectedTok, uint256 collectedQuote) = _collectedAmounts(positionId, address(t) < quote);
         assertEq(_positionLiquidity(positionId), liq, "collect never touches liquidity");
-        _checkLockerSplit(address(t), container, lockTokBefore);
-        _checkLockerSplit(quote, container, lockQuoteBefore);
+        assertGt(collectedTok, 0, "token fees collected");
+        assertGt(collectedQuote, 0, "quote fees collected");
+        _checkLockerSplit(address(t), container, collectedTok);
+        _checkLockerSplit(quote, container, collectedQuote);
+        assertEq(t.balanceOf(address(locker)) - lockTokBefore, collectedTok, "locker token delta == collected");
+        assertEq(IERC20(quote).balanceOf(address(locker)) - lockQuoteBefore, collectedQuote, "locker quote delta == collected");
 
         // Creator fees: holder may route to the Container or (fallback) to their wallet; nobody else may.
         uint256 c = pad.accrued(quote, container);
@@ -98,10 +112,22 @@ contract ForkLifecycleTest is ForkBase {
         vm.prank(alice);
         vm.expectRevert(bytes4(keccak256("NotHolder()")));
         pad.claimCreator(container, quote, false);
-        uint256 cBefore = IERC20(quote).balanceOf(container); // real Containers may already hold funds
+        uint256 cBefore = IERC20(quote).balanceOf(container); // a Container is a real account anyone can send to
         vm.prank(creator);
         pad.claimCreator(container, quote, false);
         assertEq(IERC20(quote).balanceOf(container) - cBefore, c, "fees landed in the Container");
+
+        // Locker creator claim pays exactly the accrued share; the donation stays unallocated in the locker.
+        uint256 lcq = locker.accrued(quote, container);
+        cBefore = IERC20(quote).balanceOf(container);
+        vm.prank(creator);
+        locker.claimCreator(container, quote, false);
+        assertEq(IERC20(quote).balanceOf(container) - cBefore, lcq, "Container gets its LP-fee share only");
+        assertEq(lcq, collectedQuote * 5_000 / 10_000, "donation not credited to the Container");
+        assertEq(
+            IERC20(quote).balanceOf(address(locker)), lockQuoteBefore + collectedQuote - lcq, "donation still unallocated"
+        );
+        assertGe(IERC20(quote).balanceOf(address(locker)) - locker.totalAccrued(quote), donation);
 
         uint256 lc = locker.accrued(address(t), container);
         uint256 before = t.balanceOf(creator);
@@ -109,22 +135,43 @@ contract ForkLifecycleTest is ForkBase {
         locker.claimCreator(container, address(t), true);
         assertEq(t.balanceOf(creator) - before, lc, "fallback route to holder wallet");
 
+        uint256 pAcc = pad.accrued(quote, protocol);
+        uint256 sAcc = pad.accrued(quote, sink);
+        uint256 pBefore = IERC20(quote).balanceOf(protocol);
+        uint256 sBefore = IERC20(quote).balanceOf(sink);
         pad.claim(quote, protocol);
         pad.claim(quote, sink);
+        assertEq(IERC20(quote).balanceOf(protocol) - pBefore, pAcc);
+        assertEq(IERC20(quote).balanceOf(sink) - sBefore, sAcc);
         assertEq(pad.totalAccrued(quote), 0);
     }
 
-    /// @param balBefore the locker's balance before collect: forge's default deploy address can hold real funds on a fork.
-    function _checkLockerSplit(address asset, address container, uint256 balBefore) internal view {
+    /// @dev Amounts from this collect's Collected event, as (token, quote).
+    function _collectedAmounts(uint256 positionId, bool tokenIs0) internal returns (uint256 tok, uint256 qt) {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sig = keccak256("Collected(uint256,uint256,uint256)");
+        bool found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(locker) && logs[i].topics[0] == sig && uint256(logs[i].topics[1]) == positionId)
+            {
+                (uint256 a0, uint256 a1) = abi.decode(logs[i].data, (uint256, uint256));
+                (tok, qt) = tokenIs0 ? (a0, a1) : (a1, a0);
+                found = true;
+            }
+        }
+        assertTrue(found, "Collected event");
+    }
+
+    /// @dev First collect for this asset: the locker's accruals must be exactly the collected amount, split by bps.
+    function _checkLockerSplit(address asset, address container, uint256 collected) internal view {
         uint256 total = locker.totalAccrued(asset);
-        assertGt(total, 0, "fees collected");
+        assertEq(total, collected, "accrued == collected (not balanceOf)");
         uint256 toC = locker.accrued(asset, container);
         uint256 toS = locker.accrued(asset, sink);
         uint256 toP = locker.accrued(asset, protocol);
         assertEq(toC + toS + toP, total);
         assertEq(toC, total * 5_000 / 10_000);
         assertEq(toS, total * 2_000 / 10_000);
-        assertEq(IERC20(asset).balanceOf(address(locker)) - balBefore, total);
     }
 
     function _predictV3(address token, address quote) internal pure returns (address) {

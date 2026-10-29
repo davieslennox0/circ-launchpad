@@ -97,8 +97,8 @@ contract Graduator {
 
     /// @dev The pool was initialised by someone else. The token lock means it can only hold quote-side liquidity, so:
     /// moving the price through empty ticks is free, and moving it through quote liquidity means selling LP tokens at or
-    /// above the curve price (never a loss). Both directions are hard-capped; past the cap, graduation reverts and the
-    /// curve stays live (sells keep working), so no user funds are lost.
+    /// above the curve price (never a loss). Both directions are hard-capped; past the cap, graduation reverts, the curve
+    /// stays Complete with its funds in CurvePad, and graduate() can be retried.
     function _normalize(
         address pool,
         address token,

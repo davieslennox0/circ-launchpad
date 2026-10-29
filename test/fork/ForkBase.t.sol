@@ -41,7 +41,17 @@ abstract contract ForkBase is Test {
         if (blk == 0) vm.createSelectFork(rpc);
         else vm.createSelectFork(rpc, blk);
 
-        (pad, locker) = CircDeploy.deploy(address(this), protocol, sink);
+        // Fresh deployer, so the locker and pad land on addresses that can't already hold mainnet funds.
+        // (Forge's default sender deploys to 0x5615...b72f, which holds 0.12 WOKB on X Layer.)
+        address deployer = makeAddr("circDeployer");
+        vm.startPrank(deployer);
+        (pad, locker) = CircDeploy.deploy(deployer, protocol, sink);
+        vm.stopPrank();
+        address[4] memory fresh = [address(pad), address(locker), address(pad.graduator()), address(pad.tokenDeployer())];
+        for (uint256 i; i < fresh.length; ++i) {
+            assertEq(wokb.balanceOf(fresh[i]), 0, "fresh deploy holds no WOKB");
+            assertEq(bem.balanceOf(fresh[i]), 0, "fresh deploy holds no BEM");
+        }
         assertEq(ICircuitNFT(Addresses.NANDOUT).ownerOf(1), creator, "fixture: Nandout #1 holder");
 
         address[4] memory users = [alice, bob, attacker, creator];
@@ -94,7 +104,8 @@ abstract contract ForkBase is Test {
         vm.prank(buyer);
         pad.buy(address(t), need, 0, block.timestamp);
 
-        (,,,, left,,,,, CurvePad.Status st) = pad.curves(address(t));
+        CurvePad.Status st;
+        (,,,, left,,,,, st) = pad.curves(address(t));
         assertEq(left, 0);
         assertEq(uint8(st), uint8(CurvePad.Status.Complete), "filling buy -> Complete");
         assertFalse(t.graduated(), "filling buy does not graduate");

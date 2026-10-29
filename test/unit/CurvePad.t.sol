@@ -19,13 +19,13 @@ contract CurvePadUnitTest is UnitBase {
 
     function test_create_bindsCircuitAndContainer() public {
         LaunchToken t = _launch(address(wokb));
-        (address q,,,,, address container, address cnft, uint256 cid, uint64 lb, bool g) = pad.curves(address(t));
+        (address q,,,,, address container, address cnft, uint256 cid, uint64 lb, CurvePad.Status g) = pad.curves(address(t));
         assertEq(q, address(wokb));
         assertEq(container, _container(1));
         assertEq(cnft, address(nft));
         assertEq(cid, 1);
         assertEq(lb, block.number);
-        assertFalse(g);
+        assertEq(uint8(g), uint8(CurvePad.Status.Trading));
         assertEq(t.totalSupply(), 1e27);
         assertEq(t.balanceOf(address(pad)), 1e27);
         (address rn, uint256 rid) = pad.circuitOf(container);
