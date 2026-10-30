@@ -84,7 +84,7 @@ jobs:
           echo "chain id $(cast chain-id --rpc-url $ANVIL), fork block $(cast block-number --rpc-url $ANVIL)"
       - name: Fresh throwaway fork keys (never used on mainnet)
         run: |
-          DK=$(cast wallet new --json | jq -r '.[0].private_key'); BK=$(cast wallet new --json | jq -r '.[0].private_key')
+          DK=$(cast wallet new --json | jq -r 'if type=="array" then .[0].private_key else .private_key end'); BK=$(cast wallet new --json | jq -r 'if type=="array" then .[0].private_key else .private_key end')
           echo "::add-mask::$DK"; echo "::add-mask::$BK"
           for A in $(cast wallet address $DK) $(cast wallet address $BK) $HOLDER; do
             cast rpc anvil_setBalance $A 0x3635C9ADC5DEA00000 --rpc-url $ANVIL >/dev/null   # 1000 OKB
