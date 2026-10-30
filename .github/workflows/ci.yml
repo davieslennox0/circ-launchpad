@@ -84,7 +84,7 @@ jobs:
           echo "chain id $(cast chain-id --rpc-url $ANVIL), fork block $(cast block-number --rpc-url $ANVIL)"
       - name: Fresh throwaway fork keys (never used on mainnet)
         run: |
-          DK=$(cast wallet new --json | jq -r '.[0].private_key'); BK=$(cast wallet new --json | jq -r '.[0].private_key')
+          DK=0x$(openssl rand -hex 32); BK=0x$(openssl rand -hex 32)
           echo "::add-mask::$DK"; echo "::add-mask::$BK"
           for A in $(cast wallet address $DK) $(cast wallet address $BK) $HOLDER; do
             cast rpc anvil_setBalance $A 0x3635C9ADC5DEA00000 --rpc-url $ANVIL >/dev/null   # 1000 OKB
@@ -94,20 +94,20 @@ jobs:
       - name: 1) Dry run - live curve constants for approval
         run: |
           forge script script/Deploy.s.sol --rpc-url $ANVIL -vv | tee dry.txt
-          W=$(grep -oE 'LIVE_WOKB_VQUOTE0 [0-9]+' dry.txt | awk '{print $2}')
-          B=$(grep -oE 'LIVE_BEM_VQUOTE0 [0-9]+' dry.txt | awk '{print $2}')
+          W=$(grep -oE 'LIVE_WOKB_VQUOTE0 [0-9]+' dry.txt | tail -1 | awk '{print $2}')
+          B=$(grep -oE 'LIVE_BEM_VQUOTE0 [0-9]+' dry.txt | tail -1 | awk '{print $2}')
           test -n "$W" && test -n "$B"
           # Fork-only: the dry-run values stand in for the owner's approval. Mainnet needs the owner's own values.
           echo "APPROVED_WOKB_VQUOTE0=$W" >> $GITHUB_ENV; echo "APPROVED_BEM_VQUOTE0=$B" >> $GITHUB_ENV
       - name: 2) Deploy (broadcast to the anvil fork)
         run: |
           forge script script/Deploy.s.sol --rpc-url $ANVIL --broadcast -vv | tee deploy.txt
-          PAD=$(grep -oE 'CurvePad +0x[0-9a-fA-F]{40}' deploy.txt | awk '{print $2}')
+          PAD=$(grep -oE 'CurvePad +0x[0-9a-fA-F]{40}' deploy.txt | tail -1 | awk '{print $2}')
           test -n "$PAD"; echo "CIRC_PAD=$PAD" >> $GITHUB_ENV
       - name: 3) Launch as the Nandout holder
         run: |
           forge script script/Gate2Sample.s.sol --sig "launch()" --rpc-url $ANVIL --broadcast --unlocked --sender $HOLDER -vv | tee launch.txt
-          TOKEN=$(grep -oE 'TOKEN 0x[0-9a-fA-F]{40}' launch.txt | awk '{print $2}')
+          TOKEN=$(grep -oE 'TOKEN 0x[0-9a-fA-F]{40}' launch.txt | tail -1 | awk '{print $2}')
           test -n "$TOKEN"; echo "CIRC_TOKEN=$TOKEN" >> $GITHUB_ENV
           cast rpc anvil_mine 0x20 --rpc-url $ANVIL >/dev/null   # past GUARD_BLOCKS (30)
       - name: 4) Fill -> Complete -> graduate -> trade via Universal Router -> collect
