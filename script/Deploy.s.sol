@@ -5,9 +5,10 @@ import {Script, console2} from "forge-std/Script.sol";
 import {Vm, VmSafe} from "forge-std/Vm.sol";
 import {CurvePad} from "../src/CurvePad.sol";
 import {PositionLocker} from "../src/PositionLocker.sol";
-import {INonfungiblePositionManager} from "../src/interfaces/IUniswapV3.sol";
+import {IPositionManager} from "../src/interfaces/IUniswapV4.sol";
 import {Addresses} from "./Addresses.sol";
 import {CurveConstants} from "./CurveConstants.sol";
+import {HookMiner} from "./HookMiner.sol";
 
 /// @notice Shared X Layer wiring for the deploy script and fork tests.
 library CircDeploy {
@@ -19,12 +20,17 @@ library CircDeploy {
         returns (CurvePad pad, PositionLocker locker)
     {
         address predictedPad = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 1);
-        locker = new PositionLocker(INonfungiblePositionManager(Addresses.NPM), predictedPad, protocol, sink);
-        pad = new CurvePad(params(address(locker), protocol, sink));
+        (bytes32 hookSalt,) = HookMiner.mine(predictedPad, Addresses.POOL_MANAGER, Addresses.POSITION_MANAGER);
+        locker = new PositionLocker(IPositionManager(Addresses.POSITION_MANAGER), predictedPad, protocol, sink);
+        pad = new CurvePad(params(address(locker), protocol, sink, hookSalt));
         require(address(pad) == predictedPad, "pad address mismatch");
     }
 
-    function params(address locker, address protocol, address sink) internal pure returns (CurvePad.Params memory) {
+    function params(address locker, address protocol, address sink, bytes32 hookSalt)
+        internal
+        pure
+        returns (CurvePad.Params memory)
+    {
         return CurvePad.Params({
             wokb: Addresses.WOKB,
             bem: Addresses.BEM,
@@ -33,11 +39,13 @@ library CircDeploy {
             circuitFactory: Addresses.CIRCUIT_FACTORY,
             registry: Addresses.ERC6551_REGISTRY,
             containerImpl: Addresses.CONTAINER_IMPL,
-            v3Factory: Addresses.V3_FACTORY,
-            npm: Addresses.NPM,
+            poolManager: Addresses.POOL_MANAGER,
+            positionManager: Addresses.POSITION_MANAGER,
+            permit2: Addresses.PERMIT2,
             locker: locker,
             protocol: protocol,
-            sink: sink
+            sink: sink,
+            hookSalt: hookSalt
         });
     }
 }
@@ -69,6 +77,8 @@ contract Deploy is Script {
 
         console2.log("PositionLocker", address(locker));
         console2.log("CurvePad      ", address(pad));
+        console2.log("CircHook      ", address(pad.hook()));
+        console2.log("Graduator     ", address(pad.graduator()));
         console2.log("protocol      ", protocol);
         console2.log("sink          ", sink);
     }

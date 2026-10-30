@@ -7,8 +7,10 @@ Circ is a launchpad on X Layer (chain 196) for tokens bound to TapeOut Circuit N
 - **Curve:** each token trades on a virtual constant-product bonding curve held in a single `CurvePad` contract.
   The quote asset is WOKB (native OKB accepted) or BEM.
 - **Graduation:** the buy that sells out the curve marks it Complete and emits `CurveCompleted`. Trading closes at
-  that point. Anyone can then call `graduate(token)`, which seeds a full-range Uniswap v3 position (1% fee tier) with
-  the raise and the reserved tokens. The position is locked forever in `PositionLocker`.
+  that point. Anyone can then call `graduate(token)`, which seeds a full-range Uniswap v4 position (1% fee tier) in a
+  Circ-hooked pool with the raise and the reserved tokens. The position is locked forever in `PositionLocker`.
+  - `CircHook` lets only Circ's Graduator initialize the pool or add liquidity, so graduation always opens at the
+    curve's final price. It has no swap hooks, so the pool trades like a vanilla v4 pool.
 - **Fees:** curve fees (1%) and LP fees are split 50% to the Circuit's TapeOut Container, 30% to the protocol and 20% to
   an ecosystem sink.
   - Fees are pull-based.
@@ -17,7 +19,7 @@ Circ is a launchpad on X Layer (chain 196) for tokens bound to TapeOut Circuit N
 | Doc | What's in it |
 |---|---|
 | [SPEC.md](SPEC.md) | Build spec and owner amendments |
-| [RECON.md](RECON.md) | On-chain recon: Uniswap v3, BEM, TapeOut Containers, prices |
+| [RECON.md](RECON.md) | On-chain recon: Uniswap v3 and v4, BEM, TapeOut Containers, prices |
 
 ## Curve
 
@@ -36,13 +38,14 @@ figures use OKB and BEM prices from 2026-10-29.
 
 ```
 src/CurvePad.sol         create / buy / sell / graduate, fee accrual (singleton)
-src/LaunchToken.sol      fixed-supply ERC-20, v3 pool locked until graduation
+src/LaunchToken.sol      fixed-supply ERC-20, no owner, no restrictions
+src/CircHook.sol         v4 hook: only Graduator may initialize / add liquidity
 src/PositionLocker.sol   holds LP NFTs forever, permissionless fee collect + split
 src/FeeVault.sol         pull-based fee accounting shared by both
 src/TokenDeployer.sol    CREATE2 LaunchToken factory, deployed by CurvePad
-src/Graduator.sol        pool setup, price normalisation, locked mint; deployed by CurvePad
+src/Graduator.sol        v4 pool init at P_end, locked full-range mint; deployed by CurvePad
 test/unit/               mocks, fuzz and invariant tests
-test/fork/               X Layer mainnet fork tests against real Uniswap v3 / TapeOut
+test/fork/               X Layer mainnet fork tests against real Uniswap v4 / TapeOut
 script/Deploy.s.sol      deploys PositionLocker then CurvePad
 ```
 
@@ -71,5 +74,5 @@ The holder fallback claim exists in case an upgrade breaks Container withdrawals
 
 ## Deployment
 
-There is no Uniswap v3 on the X Layer testnet, so deployment is dry-run on an anvil mainnet fork first. Mainnet deployment
+There is no Uniswap v4 on the X Layer testnet, so deployment is dry-run on an anvil mainnet fork first. Mainnet deployment
 happens only with the owner's explicit go-ahead. Keys live in `.env`, which is gitignored.

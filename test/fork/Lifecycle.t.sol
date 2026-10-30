@@ -4,10 +4,10 @@ pragma solidity ^0.8.24;
 import {Vm} from "forge-std/Vm.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {ForkBase, IPoolLiquidity} from "./ForkBase.t.sol";
+import {ForkBase} from "./ForkBase.t.sol";
+import {PoolKey} from "../../src/interfaces/IUniswapV4.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
-import {IUniswapV3Pool} from "../../src/interfaces/IUniswapV3.sol";
 import {Addresses} from "../../script/Addresses.sol";
 import {CurveConstants} from "../../script/CurveConstants.sol";
 
@@ -22,7 +22,6 @@ contract ForkLifecycleTest is ForkBase {
 
     function _lifecycle(address quote, uint256 circuitId, uint256 unit) internal {
         LaunchToken t = _launch(quote, circuitId);
-        assertEq(t.predictedPool(), _predictV3(address(t), quote), "token predicts the real v3 pool address");
         (,,,,, address container,,,,) = pad.curves(address(t));
         assertEq(container, _container(circuitId));
 
@@ -46,8 +45,9 @@ contract ForkLifecycleTest is ForkBase {
         uint256 accruedBefore = pad.totalAccrued(quote);
         _complete(t, alice);
         _assertSolvent(ts, quote); // Complete: funds still in the pad
-        uint256 poolQuoteBefore = IERC20(quote).balanceOf(t.predictedPool());
-        (uint256 positionId, address pool) = _graduateNow(t);
+        // v4 pools share the PoolManager's balance, so the raise is measured as the PoolManager's quote delta.
+        uint256 pmQuoteBefore = IERC20(quote).balanceOf(Addresses.POOL_MANAGER);
+        (uint256 positionId, bytes32 poolId) = _graduateNow(t);
         _assertSolvent(ts, quote);
 
         // Curve closed.
@@ -56,39 +56,32 @@ contract ForkLifecycleTest is ForkBase {
         pad.buy(address(t), unit, 0, block.timestamp);
 
         // Pool opens at the curve's final price (within 0.1%).
-        (, uint128 vQuote, uint128 vToken,,,,,,,) = pad.curves(address(t));
-        uint256 expectX192 = address(t) < quote
-            ? Math.mulDiv(vQuote, 1 << 192, vToken)
-            : Math.mulDiv(vToken, 1 << 192, vQuote);
-        (uint160 sqrtP,,,,,,) = IUniswapV3Pool(pool).slot0();
-        uint256 gotX192 = Math.mulDiv(sqrtP, sqrtP, 1);
-        assertApproxEqRel(gotX192, expectX192, 0.001e18, "pool price ~ P_end");
+        _assertOpensAtCurvePrice(t, poolId, 0.001e18);
 
         // Position locked, liquidity live, raise in the pool.
-        assertEq(_ownerOfPosition(positionId), address(locker));
+        assertEq(posm.ownerOf(positionId), address(locker));
         assertEq(locker.containerOf(positionId), container);
-        uint128 liq = _positionLiquidity(positionId);
+        uint128 liq = posm.getPositionLiquidity(positionId);
         assertGt(liq, 0);
-        assertEq(IPoolLiquidity(pool).liquidity(), liq, "only our position is in range");
+        assertEq(stateView.getLiquidity(poolId), liq, "the locked position is the pool's only liquidity");
         assertEq(t.balanceOf(address(pad)), 0, "dust burned");
         assertApproxEqRel(t.totalSupply(), 1e27, 0.0001e18);
-        uint256 raised = IERC20(quote).balanceOf(pool) - poolQuoteBefore;
+        uint256 raised = IERC20(quote).balanceOf(Addresses.POOL_MANAGER) - pmQuoteBefore;
         uint256 rTarget = Math.mulDiv(
             _vQuote0(quote), CurveConstants.V_TOKEN0, CurveConstants.V_TOKEN0 - CurveConstants.CURVE_SUPPLY
         ) - _vQuote0(quote);
         assertApproxEqRel(raised, rTarget, 0.0001e18, "R in pool");
         assertGe(pad.totalAccrued(quote), accruedBefore, "graduation never reduces accrued fees");
 
-        // Trade on v3 after graduation (pool lock lifted), then collect and split LP fees.
-        vm.prank(alice);
-        t.transfer(address(this), 1_000_000 ether);
-        _poolSwap(pool, address(t), 1_000_000 ether);
-        vm.prank(bob);
-        IERC20(quote).transfer(address(this), unit);
-        _poolSwap(pool, quote, unit);
+        // Routing: trade the graduated token both ways through Universal Router 2.1.2, then collect and split LP fees.
+        PoolKey memory key = _key(t);
+        uint256 quoteOut = _routerSwap(alice, key, address(t), 1_000_000 ether);
+        assertGt(quoteOut, 0, "sell via Universal Router");
+        uint256 tokOut = _routerSwap(bob, key, quote, unit);
+        assertGt(tokOut, 0, "buy via Universal Router");
 
-        // Someone donates quote to the locker before the collect. Splits must come from what positionManager.collect
-        // returns, never from balanceOf, so the donation must not reach this position's Container (or anyone).
+        // Someone donates quote to the locker before the collect. The split must cover only what this collect brought
+        // in, so the donation must not reach this position's Container (or anyone).
         uint256 donation = unit;
         vm.prank(bob);
         IERC20(quote).transfer(address(locker), donation);
@@ -98,7 +91,7 @@ contract ForkLifecycleTest is ForkBase {
         vm.recordLogs();
         locker.collect(positionId);
         (uint256 collectedTok, uint256 collectedQuote) = _collectedAmounts(positionId, address(t) < quote);
-        assertEq(_positionLiquidity(positionId), liq, "collect never touches liquidity");
+        assertEq(posm.getPositionLiquidity(positionId), liq, "collect never touches liquidity");
         assertGt(collectedTok, 0, "token fees collected");
         assertGt(collectedQuote, 0, "quote fees collected");
         _checkLockerSplit(address(t), container, collectedTok);
@@ -172,29 +165,5 @@ contract ForkLifecycleTest is ForkBase {
         assertEq(toC + toS + toP, total);
         assertEq(toC, total * 5_000 / 10_000);
         assertEq(toS, total * 2_000 / 10_000);
-    }
-
-    function _predictV3(address token, address quote) internal pure returns (address) {
-        (address a, address b) = token < quote ? (token, quote) : (quote, token);
-        return address(
-            uint160(
-                uint256(
-                    keccak256(
-                        abi.encodePacked(
-                            hex"ff",
-                            Addresses.V3_FACTORY,
-                            keccak256(abi.encode(a, b, uint24(10_000))),
-                            bytes32(0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54)
-                        )
-                    )
-                )
-            )
-        );
-    }
-
-    function _ownerOfPosition(uint256 id) internal view returns (address o) {
-        (bool ok, bytes memory r) = address(npm).staticcall(abi.encodeWithSignature("ownerOf(uint256)", id));
-        require(ok);
-        o = abi.decode(r, (address));
     }
 }

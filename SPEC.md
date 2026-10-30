@@ -38,6 +38,24 @@ over 49,152 B.
   example `NormalizeTooCostly` on a griefed pool), the curve stays Complete and its funds stay in CurvePad.
 - Lifecycle: Trading → Complete → Graduated.
 
+**A5. Graduation venue: Uniswap v4 with the Circ hook (2026-10-30, replaces the v3 venue in sections 2 and 6.2,
+the pool lock in 6.1, and price normalisation).**
+- The pool key is (token, quote, fee 10000, tickSpacing 200, CircHook).
+- CircHook has no admin and is immutable. It has only `beforeInitialize` and `beforeAddLiquidity`: no swap hooks, no
+  delta flags, and its address doesn't start with `0x91`, so it stays on Uniswap's routing auto-allowlist.
+  - `beforeInitialize` reverts unless the sender is Graduator.
+  - `beforeAddLiquidity` reverts unless Graduator authorised that exact add. Graduator authorises one add for one pool,
+    held in transient storage for that transaction, then mints through the v4 PositionManager, which is the `sender`
+    the PoolManager reports.
+- Graduator initializes at exactly P_end, mints full range and sends the NFT to PositionLocker. The normalisation swap,
+  `NormalizeTooCostly` and the LaunchToken pool lock are deleted, and LaunchToken is a plain fixed-supply ERC-20.
+- The Complete status and the permissionless, retryable `graduate()` (A4) stay.
+- PositionLocker holds v4 position NFTs with no decrease, burn or transfer path. `collect` runs DECREASE_LIQUIDITY(0) +
+  TAKE_PAIR and splits what that call brought in.
+
+**A6. Anti-snipe (2026-10-30, replaces 5.3's per-buy cap).** During GUARD_BLOCKS, MAX_EARLY_BUY caps the total curve
+tokens bought per block across all buyers and calls. The dev-buy stays exempt and isn't counted.
+
 ---
 
 ## 0. Process

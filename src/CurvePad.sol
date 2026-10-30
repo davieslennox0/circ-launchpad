@@ -5,18 +5,18 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {FeeVault} from "./FeeVault.sol";
-import {LaunchToken} from "./LaunchToken.sol";
 import {PositionLocker} from "./PositionLocker.sol";
 import {CurveMath} from "./libraries/CurveMath.sol";
 import {TokenDeployer} from "./TokenDeployer.sol";
 import {Graduator} from "./Graduator.sol";
+import {CircHook} from "./CircHook.sol";
 import {ICircuitFactory, ICircuitNFT, IERC6551Registry} from "./interfaces/ITapeOut.sol";
-import {IUniswapV3Factory, INonfungiblePositionManager, IWOKB} from "./interfaces/IUniswapV3.sol";
+import {IPoolManager, IPositionManager, IAllowanceTransfer, IWOKB} from "./interfaces/IUniswapV4.sol";
 
 /// @title CurvePad
 /// @notice Circ launchpad singleton. Every launch is bound to a TapeOut Circuit NFT, trades on a virtual
-/// constant-product curve held here, and graduates into a locked full-range Uniswap v3 position when the curve sells out.
-/// Its two helpers, TokenDeployer and Graduator, are created in the constructor, so the wiring is fixed at deploy time.
+/// constant-product curve held here, and graduates into a locked full-range Uniswap v4 position (CircHook pool) once the
+/// curve sells out. TokenDeployer, CircHook and Graduator are created in the constructor, so the wiring is fixed at deploy.
 contract CurvePad is FeeVault {
     using SafeERC20 for IERC20;
     using SafeCast for uint256;
@@ -57,11 +57,15 @@ contract CurvePad is FeeVault {
         address circuitFactory;
         address registry;
         address containerImpl;
-        address v3Factory;
-        address npm;
+        address poolManager;
+        address positionManager;
+        address permit2;
         address locker;
         address protocol;
         address sink;
+        /// @dev CREATE2 salt (mined off-chain, see script/HookMiner.sol) giving CircHook an address with exactly the
+        /// BEFORE_INITIALIZE and BEFORE_ADD_LIQUIDITY flag bits and no 0x91 prefix.
+        bytes32 hookSalt;
     }
 
     uint256 public constant TOTAL_SUPPLY = 1_000_000_000 ether;
@@ -75,11 +79,15 @@ contract CurvePad is FeeVault {
     ICircuitFactory public immutable circuitFactory;
     IERC6551Registry public immutable registry;
     address public immutable containerImpl;
-    IUniswapV3Factory public immutable v3Factory;
-    INonfungiblePositionManager public immutable npm;
     address public immutable locker;
     TokenDeployer public immutable tokenDeployer;
+    CircHook public immutable hook;
     Graduator public immutable graduator;
+
+    /// @dev Low 14 bits of a v4 hook address are its permission flags: BEFORE_INITIALIZE (1 << 13) | BEFORE_ADD_LIQUIDITY
+    /// (1 << 11), nothing else (no swap, donate or delta flags).
+    uint160 internal constant HOOK_FLAG_MASK = (1 << 14) - 1;
+    uint160 internal constant HOOK_FLAGS = (1 << 13) | (1 << 11);
 
     uint128 internal immutable wokbVQuote0;
     uint128 internal immutable wokbVToken0;
@@ -121,9 +129,10 @@ contract CurvePad is FeeVault {
     );
     /// @notice The curve sold out. Trading is closed; anyone can now call `graduate(token)`.
     event CurveCompleted(address indexed token);
-    event Graduated(address indexed token, address indexed pool, uint256 positionId, uint256 raised, uint256 lpTokens);
+    event Graduated(address indexed token, bytes32 indexed poolId, uint256 positionId, uint256 raised, uint256 lpTokens);
 
     error BadConfig();
+    error BadHookAddress();
     error BadQuote();
     error NotTapeOut();
     error UnknownLaunch();
@@ -140,12 +149,15 @@ contract CurvePad is FeeVault {
     constructor(Params memory p) FeeVault(p.protocol, p.sink) {
         if (
             p.wokb == address(0) || p.bem == address(0) || p.circuitFactory == address(0) || p.registry == address(0)
-                || p.containerImpl == address(0) || p.v3Factory == address(0) || p.npm == address(0)
-                || p.locker == address(0)
+                || p.containerImpl == address(0) || p.poolManager == address(0) || p.positionManager == address(0)
+                || p.permit2 == address(0) || p.locker == address(0)
         ) revert ZeroAddress();
         _checkConfig(p.wokbConfig);
         _checkConfig(p.bemConfig);
-        if (PositionLocker(p.locker).pad() != address(this) || address(PositionLocker(p.locker).npm()) != p.npm) {
+        if (
+            PositionLocker(p.locker).pad() != address(this)
+                || address(PositionLocker(p.locker).positionManager()) != p.positionManager
+        ) {
             revert BadConfig();
         }
         wokb = p.wokb;
@@ -153,11 +165,23 @@ contract CurvePad is FeeVault {
         circuitFactory = ICircuitFactory(p.circuitFactory);
         registry = IERC6551Registry(p.registry);
         containerImpl = p.containerImpl;
-        v3Factory = IUniswapV3Factory(p.v3Factory);
-        npm = INonfungiblePositionManager(p.npm);
         locker = p.locker;
-        tokenDeployer = new TokenDeployer(p.v3Factory);
-        graduator = new Graduator(IUniswapV3Factory(p.v3Factory), INonfungiblePositionManager(p.npm), p.locker);
+
+        // Creation order fixes the addresses: TokenDeployer (nonce 1), CircHook via CREATE2 (uses nonce 2), Graduator
+        // (nonce 3). The hook is built with Graduator's address before Graduator exists, then checked.
+        tokenDeployer = new TokenDeployer();
+        address graduatorAddr = _createAddress(3);
+        hook = new CircHook{salt: p.hookSalt}(graduatorAddr, p.poolManager, p.positionManager);
+        uint160 h = uint160(address(hook));
+        if (h & HOOK_FLAG_MASK != HOOK_FLAGS || h >> 152 == 0x91) revert BadHookAddress();
+        graduator = new Graduator(
+            IPoolManager(p.poolManager),
+            IPositionManager(p.positionManager),
+            IAllowanceTransfer(p.permit2),
+            hook,
+            p.locker
+        );
+        if (address(graduator) != graduatorAddr) revert BadConfig();
         (wokbVQuote0, wokbVToken0, wokbCurveSupply, wokbLpTokens) =
             (p.wokbConfig.vQuote0, p.wokbConfig.vToken0, p.wokbConfig.curveSupply, p.wokbConfig.lpTokens);
         (bemVQuote0, bemVToken0, bemCurveSupply, bemLpTokens) =
@@ -215,7 +239,7 @@ contract CurvePad is FeeVault {
         _registerContainer(container, circuitNft, circuitId);
 
         bytes32 salt = keccak256(abi.encode(msg.sender, circuitNft, circuitId));
-        token = tokenDeployer.deploy(salt, name, symbol, quote);
+        token = tokenDeployer.deploy(salt, name, symbol);
         curves[token] = Curve({
             quote: quote,
             vQuote: cfg.vQuote0,
@@ -366,9 +390,9 @@ contract CurvePad is FeeVault {
         }
     }
 
-    /// @notice Graduate a Complete curve into its locked Uniswap v3 position. Permissionless. If it reverts (for example
-    /// NormalizeTooCostly on a griefed pool) nothing changes: the curve stays Complete, its funds stay here, and anyone
-    /// can retry once the pool is fixable.
+    /// @notice Graduate a Complete curve into its locked Uniswap v4 position. Permissionless. Nobody else can initialize
+    /// or add liquidity to the CircHook pool, so this does not depend on pool state; if it ever reverts, nothing changes
+    /// (the curve stays Complete, its funds stay here) and anyone can retry.
     function graduate(address token) external nonReentrant {
         Curve storage c = _curve(token);
         if (c.status == Status.Graduated) revert AlreadyGraduated();
@@ -383,16 +407,22 @@ contract CurvePad is FeeVault {
         address quote = c.quote;
         uint256 quoteAmt = c.realQuote;
         c.realQuote = 0;
-        LaunchToken(token).markGraduated();
 
         uint256 tokenAmt = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransfer(address(graduator), tokenAmt);
         IERC20(quote).safeTransfer(address(graduator), quoteAmt);
+        (address c0, address c1) = token < quote ? (token, quote) : (quote, token);
         Graduator.Result memory r = graduator.graduate(
-            token, quote, c.vQuote, c.vToken, tokenAmt, quoteAmt, abi.encode(token, c.container, c.circuitNft, c.circuitId)
+            token,
+            quote,
+            c.vQuote,
+            c.vToken,
+            tokenAmt,
+            quoteAmt,
+            abi.encode(token, c.container, c.circuitNft, c.circuitId, c0, c1)
         );
         _accrueProtocol(quote, r.quoteLeft);
-        emit Graduated(token, r.pool, r.positionId, r.quoteUsed, r.tokenUsed);
+        emit Graduated(token, r.poolId, r.positionId, r.quoteUsed, r.tokenUsed);
     }
 
     function _curve(address token) internal view returns (Curve storage c) {
@@ -416,6 +446,11 @@ contract CurvePad is FeeVault {
 
     function _checkDeadline(uint256 deadline) internal view {
         if (block.timestamp > deadline) revert Expired();
+    }
+
+    /// @dev CREATE address of this contract's `nonce`-th creation (RLP form valid for nonce 1..0x7f).
+    function _createAddress(uint8 nonce) internal view returns (address) {
+        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xd6), bytes1(0x94), address(this), nonce)))));
     }
 
     function _checkConfig(QuoteConfig memory q) internal pure {

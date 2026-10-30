@@ -5,7 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
 import {PositionLocker} from "../../src/PositionLocker.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
-import {INonfungiblePositionManager} from "../../src/interfaces/IUniswapV3.sol";
+import {IPositionManager} from "../../src/interfaces/IUniswapV4.sol";
+import {HookMiner} from "../../script/HookMiner.sol";
 import {CurveConstants} from "../../script/CurveConstants.sol";
 import "./Mocks.sol";
 
@@ -18,9 +19,11 @@ abstract contract UnitBase is Test {
     MockRegistry registry;
     MockWOKB wokb;
     MockQuote bem;
-    address npm;
+    address posm;
 
-    address constant V3_FACTORY = address(0xF4C7); // only used to derive the predicted pool in unit tests
+    // v4 stand-ins: graduation itself needs real Uniswap v4 and is covered by the fork suite.
+    address constant POOL_MANAGER = address(0xF4C7);
+    address constant PERMIT2 = address(0x9E2);
     address constant IMPL = address(0x1111);
     address protocol = makeAddr("protocol");
     address sink = makeAddr("sink");
@@ -35,14 +38,15 @@ abstract contract UnitBase is Test {
         registry = new MockRegistry();
         wokb = new MockWOKB();
         bem = new MockQuote("BEM", 8);
-        npm = address(new MockNPM());
+        posm = address(new MockNPM());
         cfactory.setCPU(address(nft), true);
         nft.mint(creator, 1);
         nft.mint(creator, 2);
         fakeNft.mint(creator, 1);
 
         address predictedPad = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        locker = new PositionLocker(INonfungiblePositionManager(npm), predictedPad, protocol, sink);
+        (bytes32 hookSalt,) = HookMiner.mine(predictedPad, POOL_MANAGER, posm);
+        locker = new PositionLocker(IPositionManager(posm), predictedPad, protocol, sink);
         pad = new CurvePad(
             CurvePad.Params({
                 wokb: address(wokb),
@@ -52,11 +56,13 @@ abstract contract UnitBase is Test {
                 circuitFactory: address(cfactory),
                 registry: address(registry),
                 containerImpl: IMPL,
-                v3Factory: V3_FACTORY,
-                npm: npm,
+                poolManager: POOL_MANAGER,
+                positionManager: posm,
+                permit2: PERMIT2,
                 locker: address(locker),
                 protocol: protocol,
-                sink: sink
+                sink: sink,
+                hookSalt: hookSalt
             })
         );
         assertEq(address(pad), predictedPad);
