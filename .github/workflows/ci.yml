@@ -64,3 +64,63 @@ jobs:
           CIRC_PROTOCOL: "0x000000000000000000000000000000000000dEaD"
           CIRC_SINK: "0x000000000000000000000000000000000000bEEF"
         run: forge script script/Deploy.s.sol --fork-url "$XLAYER_RPC_URL" -vvv
+
+  gate2:
+    name: GATE 2 dry run (anvil fork of X Layer mainnet)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      ANVIL: http://127.0.0.1:8545
+      HOLDER: "0x934d315C0a9C0866D393B722C1805F2B6b20b816"
+      CIRC_PROTOCOL: "0x000000000000000000000000000000000000dEaD"
+      CIRC_SINK: "0x000000000000000000000000000000000000bEEF"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Start anvil fork (chain id stays 196)
+        run: |
+          anvil --fork-url "$XLAYER_RPC_URL" --port 8545 --auto-impersonate --silent > anvil.log 2>&1 &
+          for i in $(seq 1 60); do cast block-number --rpc-url $ANVIL >/dev/null 2>&1 && break; sleep 2; done
+          echo "chain id $(cast chain-id --rpc-url $ANVIL), fork block $(cast block-number --rpc-url $ANVIL)"
+      - name: Fresh throwaway fork keys (never used on mainnet)
+        run: |
+          DK=$(cast wallet new --json | jq -r '.[0].private_key'); BK=$(cast wallet new --json | jq -r '.[0].private_key')
+          echo "::add-mask::$DK"; echo "::add-mask::$BK"
+          for A in $(cast wallet address $DK) $(cast wallet address $BK) $HOLDER; do
+            cast rpc anvil_setBalance $A 0x3635C9ADC5DEA00000 --rpc-url $ANVIL >/dev/null   # 1000 OKB
+          done
+          echo "PRIVATE_KEY=$DK" >> $GITHUB_ENV; echo "BUYER_KEY=$BK" >> $GITHUB_ENV
+          echo "deployer $(cast wallet address $DK)"; echo "buyer $(cast wallet address $BK)"
+      - name: 1) Dry run - live curve constants for approval
+        run: |
+          forge script script/Deploy.s.sol --rpc-url $ANVIL -vv | tee dry.txt
+          W=$(grep -oE 'LIVE_WOKB_VQUOTE0 [0-9]+' dry.txt | awk '{print $2}')
+          B=$(grep -oE 'LIVE_BEM_VQUOTE0 [0-9]+' dry.txt | awk '{print $2}')
+          test -n "$W" && test -n "$B"
+          # Fork-only: the dry-run values stand in for the owner's approval. Mainnet needs the owner's own values.
+          echo "APPROVED_WOKB_VQUOTE0=$W" >> $GITHUB_ENV; echo "APPROVED_BEM_VQUOTE0=$B" >> $GITHUB_ENV
+      - name: 2) Deploy (broadcast to the anvil fork)
+        run: |
+          forge script script/Deploy.s.sol --rpc-url $ANVIL --broadcast -vv | tee deploy.txt
+          PAD=$(grep -oE 'CurvePad +0x[0-9a-fA-F]{40}' deploy.txt | awk '{print $2}')
+          test -n "$PAD"; echo "CIRC_PAD=$PAD" >> $GITHUB_ENV
+      - name: 3) Launch as the Nandout holder
+        run: |
+          forge script script/Gate2Sample.s.sol --sig "launch()" --rpc-url $ANVIL --broadcast --unlocked --sender $HOLDER -vv | tee launch.txt
+          TOKEN=$(grep -oE 'TOKEN 0x[0-9a-fA-F]{40}' launch.txt | awk '{print $2}')
+          test -n "$TOKEN"; echo "CIRC_TOKEN=$TOKEN" >> $GITHUB_ENV
+          cast rpc anvil_mine 0x20 --rpc-url $ANVIL >/dev/null   # past GUARD_BLOCKS (30)
+      - name: 4) Fill -> Complete -> graduate -> trade via Universal Router -> collect
+        run: |
+          forge script script/Gate2Sample.s.sol --sig "finish()" --rpc-url $ANVIL --broadcast -vv | tee finish.txt
+          grep -q "GATE2 SAMPLE RUN OK" finish.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate2-run
+          path: |
+            dry.txt
+            deploy.txt
+            launch.txt
+            finish.txt
+            broadcast/

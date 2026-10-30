@@ -147,3 +147,25 @@ Three constraints (P0·1e9 = $4,000; P_end·1e9 = $69,000; curveSupply + lpToken
 2. **BEM option.** It's viable (real, tax-free OFT with a v3 pool), but the X Layer float is thin (13.3k BEM total, ~$80k pool) relative to a ~612 BEM
    graduation. **Recommend shipping BEM** as specced, since the code paths are identical, while showing WOKB as the default in the UI.
 3. **No testnet.** v3 isn't on 1952, so GATE 2 is an anvil mainnet-fork dry run only. The first real deploy is mainnet, with your explicit approval.
+
+## 7. Uniswap v4 on X Layer (2026-10-30, for amendment A5)
+
+Source: https://developers.uniswap.org/docs/protocols/v4/deployments. All addresses checked on-chain at block ~74.55M.
+
+| Contract | Address | Check |
+|---|---|---|
+| PoolManager | `0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32` | 24,009 B |
+| PositionManager | `0xcF1EAFC6928dC385A342E7C6491d371d2871458b` | 23,877 B; `poolManager()`, `permit2()`, `WETH9()` = WOKB; `nextTokenId` ≈ 20,044 |
+| Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | 9,152 B |
+| StateView | `0x76Fd297e2D437cd7f76d50F01AfE6160f86e9990` | `poolManager()` matches |
+| Quoter | `0x8928074CA1b241D8Ec02815881c1Af11E8bC5219` | 6,118 B |
+| Universal Router 2.1.2 | `0x1cd182C94fcF42277B80DBB9060F88024809E61E` | 24,380 B |
+
+v4 is not deployed on testnet 1952.
+
+**Routing.**
+- *OKX DEX:* the aggregator's X Layer source list has vanilla "Uniswap V4" (id 438) and three hooks it integrated by name:
+  "Aegis V1.1 Hook", "Community Hook" and "Stable Pair Hook". It is unconfirmed whether a new hooked pool is routed
+  without integration, so an integration request is drafted (docs/OKX_HOOK_INTEGRATION.md).
+- *Uniswap's own routing:* it auto-allowlists hooks with no delta flags, no `0x91` address prefix and no major-pair
+  target (https://developers.uniswap.org/hook-allowlist). CircHook qualifies.

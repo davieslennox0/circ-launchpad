@@ -2,11 +2,14 @@
 pragma solidity ^0.8.24;
 
 import {UnitBase} from "./Base.t.sol";
+import {MockNPM} from "./Mocks.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
 import {FeeVault} from "../../src/FeeVault.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
 import {TokenDeployer} from "../../src/TokenDeployer.sol";
 import {Graduator} from "../../src/Graduator.sol";
+import {CircHook} from "../../src/CircHook.sol";
+import {HookMiner} from "../../script/HookMiner.sol";
 import {PositionLocker} from "../../src/PositionLocker.sol";
 import {CurveConstants} from "../../script/CurveConstants.sol";
 
@@ -280,48 +283,21 @@ contract CurvePadUnitTest is UnitBase {
 
     // ------------------------------------------------------------- token
 
-    function test_token_noOwnerNoMint() public {
+    function test_token_noOwnerNoMintNoRestrictions() public {
         LaunchToken t = _launch(address(wokb));
         (bool ok,) = address(t).call(abi.encodeWithSignature("owner()"));
         assertFalse(ok);
         (ok,) = address(t).call(abi.encodeWithSignature("mint(address,uint256)", alice, 1));
         assertFalse(ok);
-        vm.expectRevert(LaunchToken.OnlyPad.selector);
-        t.markGraduated();
-    }
-
-    function test_token_poolLockBeforeGraduation() public {
-        LaunchToken t = _launch(address(wokb));
         _skipGuard();
         vm.prank(alice);
-        pad.buy(address(t), 1 ether, 0, block.timestamp);
-        address pool = t.predictedPool();
+        uint256 got = pad.buy(address(t), 1 ether, 0, block.timestamp);
         vm.prank(alice);
-        vm.expectRevert(LaunchToken.PoolLocked.selector);
-        t.transfer(pool, 1);
-
-        vm.prank(alice);
-        t.transfer(bob, 1); // wallet-to-wallet is free
-
-        vm.prank(address(pad));
-        t.markGraduated();
-        vm.prank(alice);
-        t.transfer(pool, 1);
-        assertEq(t.balanceOf(pool), 1);
-    }
-
-    function test_token_predictedPoolMatchesUniswapFormula() public {
-        LaunchToken t = _launch(address(wokb));
-        (address a, address b) = address(t) < address(wokb) ? (address(t), address(wokb)) : (address(wokb), address(t));
-        bytes32 h = keccak256(
-            abi.encodePacked(
-                hex"ff",
-                V3_FACTORY,
-                keccak256(abi.encode(a, b, uint24(10000))),
-                bytes32(0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54)
-            )
-        );
-        assertEq(t.predictedPool(), address(uint160(uint256(h))));
+        t.transfer(bob, got); // plain ERC-20: no transfer restrictions
+        assertEq(t.balanceOf(bob), got);
+        vm.prank(bob);
+        t.burn(1);
+        assertEq(t.totalSupply(), 1e27 - 1);
     }
 
     // ------------------------------------------------------------- config
@@ -330,7 +306,7 @@ contract CurvePadUnitTest is UnitBase {
         CurvePad.QuoteConfig memory bad = CurveConstants.wokb();
         bad.lpTokens += 1;
         address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        PositionLocker2 l = new PositionLocker2(npm, predicted);
+        PositionLocker2 l = new PositionLocker2(posm, predicted);
         vm.expectRevert(CurvePad.BadConfig.selector);
         new CurvePad(
             CurvePad.Params(
@@ -341,11 +317,13 @@ contract CurvePadUnitTest is UnitBase {
                 address(cfactory),
                 address(registry),
                 IMPL,
-                V3_FACTORY,
-                npm,
+                POOL_MANAGER,
+                posm,
+                PERMIT2,
                 address(l),
                 protocol,
-                sink
+                sink,
+                bytes32(0)
             )
         );
     }
@@ -354,6 +332,57 @@ contract CurvePadUnitTest is UnitBase {
         vm.prank(alice);
         (bool ok,) = address(pad).call{value: 1}("");
         assertFalse(ok);
+    }
+
+    function test_antiSnipe_capIsCurveWidePerBlock_multiWallet() public {
+        LaunchToken t = _launch(address(wokb));
+        uint256 cap = pad.MAX_EARLY_BUY();
+        vm.prank(alice);
+        pad.buy(address(t), 0.1 ether, 0, block.timestamp); // ~2.8M tokens at the launch price: under the 5M (0.5%) cap
+        uint256 a = t.balanceOf(alice);
+        assertLt(a, cap);
+        vm.prank(bob);
+        pad.buy(address(t), 50 ether, 0, block.timestamp); // capped at what's left of this block's allowance
+        assertEq(a + t.balanceOf(bob), cap, "alice + bob == one block's cap");
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.EarlyBlockCapReached.selector);
+        pad.buy(address(t), 1 ether, 0, block.timestamp);
+
+        vm.roll(block.number + 1); // fresh allowance next block, still inside the guard window
+        vm.prank(creator);
+        pad.buy(address(t), 50 ether, 0, block.timestamp);
+        assertEq(t.balanceOf(creator), cap);
+    }
+
+    function test_antiSnipe_batchedBuysInOneTxCapped() public {
+        LaunchToken t = _launch(address(wokb));
+        BatchBuyer bb = new BatchBuyer(pad, address(wokb));
+        vm.prank(alice);
+        wokb.transfer(address(bb), 1_000 ether);
+        bb.buyMany(address(t), 100, 1 ether); // 100 sequential buys in one tx, same block
+        assertEq(t.balanceOf(address(bb)), pad.MAX_EARLY_BUY(), "batch can't exceed the block cap");
+        (uint64 blk, uint192 sold) = pad.earlyBlock(address(t));
+        assertEq(blk, block.number);
+        assertEq(sold, pad.MAX_EARLY_BUY());
+    }
+
+    function test_antiSnipe_devBuyNotCounted() public {
+        vm.prank(creator);
+        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", address(wokb), 0, 0));
+        assertGt(t.balanceOf(creator), pad.MAX_EARLY_BUY());
+        vm.prank(alice);
+        pad.buy(address(t), 50 ether, 0, block.timestamp);
+        assertEq(t.balanceOf(alice), pad.MAX_EARLY_BUY(), "dev-buy didn't use up the launch block's allowance");
+    }
+
+    function test_antiSnipe_liftsAfterGuard() public {
+        LaunchToken t = _launch(address(wokb));
+        _skipGuard();
+        vm.prank(alice);
+        pad.buy(address(t), 50 ether, 0, block.timestamp);
+        vm.prank(bob);
+        pad.buy(address(t), 50 ether, 0, block.timestamp);
+        assertGt(t.balanceOf(alice) + t.balanceOf(bob), 2 * pad.MAX_EARLY_BUY());
     }
 
     // ------------------------------------------------------------- completion
@@ -381,7 +410,6 @@ contract CurvePadUnitTest is UnitBase {
         (,, uint256 real, uint256 left, CurvePad.Status st) = _curve(address(t));
         assertEq(left, 0);
         assertEq(uint8(st), uint8(CurvePad.Status.Complete));
-        assertFalse(t.graduated(), "token stays locked until graduate()");
         assertEq(t.balanceOf(address(pad)), CurveConstants.LP_TOKENS, "LP reserve still in the pad");
         assertGe(wokb.balanceOf(address(pad)), real + pad.totalAccrued(address(wokb)), "funds stay in the pad");
         assertEq(t.balanceOf(alice), CurveConstants.CURVE_SUPPLY);
@@ -432,19 +460,106 @@ contract CurvePadUnitTest is UnitBase {
     function test_helpers_deployedAndOwnedByPad() public view {
         TokenDeployer d = pad.tokenDeployer();
         Graduator g = pad.graduator();
+        CircHook h = pad.hook();
         assertEq(d.pad(), address(pad));
-        assertEq(d.v3Factory(), V3_FACTORY);
         assertEq(g.pad(), address(pad));
-        assertEq(address(g.v3Factory()), V3_FACTORY);
-        assertEq(address(g.npm()), npm);
+        assertEq(address(g.poolManager()), POOL_MANAGER);
+        assertEq(address(g.positionManager()), posm);
+        assertEq(address(g.permit2()), PERMIT2);
+        assertEq(address(g.hook()), address(h));
         assertEq(g.locker(), address(locker));
+        assertEq(h.graduator(), address(g));
+        assertEq(h.poolManager(), POOL_MANAGER);
+        assertEq(h.positionManager(), posm);
+        uint160 a = uint160(address(h));
+        assertEq(a & ((1 << 14) - 1), (1 << 13) | (1 << 11), "hook flags: beforeInitialize + beforeAddLiquidity only");
+        assertTrue(a >> 152 != 0x91, "not on the 0x91 manual-review prefix");
+    }
+
+    function test_constructorRejectsBadHookSalt() public {
+        // A salt that doesn't produce the flag bits must be refused.
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        PositionLocker2 l = new PositionLocker2(posm, predicted);
+        (bytes32 good,) = HookMiner.mine(predicted, POOL_MANAGER, posm);
+        vm.expectRevert(CurvePad.BadHookAddress.selector);
+        new CurvePad(
+            CurvePad.Params(
+                address(wokb),
+                address(bem),
+                CurveConstants.wokb(),
+                CurveConstants.bem(),
+                address(cfactory),
+                address(registry),
+                IMPL,
+                POOL_MANAGER,
+                posm,
+                PERMIT2,
+                address(l),
+                protocol,
+                sink,
+                bytes32(uint256(good) + 1)
+            )
+        );
+    }
+
+    function test_constructorRejectsMismatchedV4Wiring() public {
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2);
+        address wrongPosm = address(new MockNPM(address(0xBAD), PERMIT2)); // posm wired to another PoolManager
+        PositionLocker2 l = new PositionLocker2(wrongPosm, predicted);
+        vm.expectRevert(CurvePad.BadConfig.selector);
+        new CurvePad(
+            CurvePad.Params(
+                address(wokb),
+                address(bem),
+                CurveConstants.wokb(),
+                CurveConstants.bem(),
+                address(cfactory),
+                address(registry),
+                IMPL,
+                POOL_MANAGER,
+                wrongPosm,
+                PERMIT2,
+                address(l),
+                protocol,
+                sink,
+                bytes32(0)
+            )
+        );
+    }
+
+    function test_constructorRejectsUnrepresentableGraduationPrice() public {
+        CurvePad.QuoteConfig memory bad = CurveConstants.wokb();
+        // 1 wei of virtual quote: P_end is so small that the inverse ordering's price doesn't fit Q64.96 at all. The
+        // constructor refuses it (range check, or overflow while computing it); either way no deploy.
+        bad.vQuote0 = 1;
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        PositionLocker2 l = new PositionLocker2(posm, predicted);
+        vm.expectRevert();
+        new CurvePad(
+            CurvePad.Params(
+                address(wokb),
+                address(bem),
+                bad,
+                CurveConstants.bem(),
+                address(cfactory),
+                address(registry),
+                IMPL,
+                POOL_MANAGER,
+                posm,
+                PERMIT2,
+                address(l),
+                protocol,
+                sink,
+                bytes32(0)
+            )
+        );
     }
 
     function test_tokenDeployer_onlyPad() public {
         TokenDeployer d = pad.tokenDeployer();
         vm.prank(alice);
         vm.expectRevert(TokenDeployer.OnlyPad.selector);
-        d.deploy(bytes32(0), "X", "X", address(wokb));
+        d.deploy(bytes32(0), "X", "X");
     }
 
     function test_graduator_onlyPad() public {
@@ -454,45 +569,62 @@ contract CurvePadUnitTest is UnitBase {
         g.graduate(address(1), address(wokb), 1, 1, 0, 0, "");
     }
 
-    function test_graduator_callbackRejectsStrangers() public {
-        Graduator g = pad.graduator();
-        vm.expectRevert(Graduator.BadCallback.selector);
-        g.uniswapV3SwapCallback(1, 0, abi.encode(address(wokb), address(bem)));
-    }
-
-    function test_token_controllerIsPad_andAddressFromDeployer() public {
+    function test_token_supplyToPad_andAddressFromDeployer() public {
         LaunchToken t = _launch(address(wokb));
-        assertEq(t.pad(), address(pad), "pad controls the token");
         assertEq(t.balanceOf(address(pad)), 1e27, "full supply minted to pad");
         bytes32 salt = keccak256(abi.encode(creator, address(nft), uint256(1)));
-        bytes memory init = abi.encodePacked(
-            type(LaunchToken).creationCode, abi.encode("Circ Test", "CT", address(wokb), V3_FACTORY, address(pad))
-        );
+        bytes memory init = abi.encodePacked(type(LaunchToken).creationCode, abi.encode("Circ Test", "CT", address(pad)));
         assertEq(address(t), vm.computeCreate2Address(salt, keccak256(init), address(pad.tokenDeployer())));
-        vm.prank(address(pad.tokenDeployer()));
-        vm.expectRevert(LaunchToken.OnlyPad.selector);
-        t.markGraduated();
     }
 
     function test_locker_rejectsNftsNotFromGraduator() public {
-        vm.prank(npm);
+        bytes memory data = abi.encode(address(1), address(2), address(nft), uint256(1), address(3), address(4));
+        vm.prank(posm);
         vm.expectRevert(PositionLocker.NotPad.selector);
-        locker.onERC721Received(address(pad), address(pad), 1, abi.encode(address(0), address(0), address(0), 0));
+        locker.onERC721Received(address(pad), address(pad), 1, data);
         address g = address(pad.graduator()); // resolve before prank: an external call would consume it
-        vm.prank(npm);
-        locker.onERC721Received(g, g, 1, abi.encode(address(1), address(2), address(nft), 1));
+        vm.prank(alice);
+        vm.expectRevert(PositionLocker.NotPad.selector);
+        locker.onERC721Received(g, g, 1, data); // right operator, wrong NFT contract
+        vm.prank(posm);
+        locker.onERC721Received(g, g, 1, data);
         assertEq(locker.containerOf(1), address(2));
+        (address c, address c0, address c1) = locker.locks(1);
+        assertEq(c, address(2));
+        assertEq(c0, address(3));
+        assertEq(c1, address(4));
     }
 }
 
-/// @dev Minimal stand-in exposing pad()/npm() so the constructor reaches the config check.
+/// @dev Minimal stand-in exposing pad()/positionManager() so the constructor reaches the config check.
 contract PositionLocker2 {
-    address public npm;
+    address public positionManager;
     address public pad;
 
     constructor(address n, address p) {
-        npm = n;
+        positionManager = n;
         pad = p;
     }
+}
 
+/// @dev Splits one large buy into many sequential buys inside a single transaction.
+contract BatchBuyer {
+    CurvePad immutable pad;
+    address immutable quote;
+
+    constructor(CurvePad pad_, address quote_) {
+        pad = pad_;
+        quote = quote_;
+    }
+
+    function buyMany(address token, uint256 n, uint256 each) external {
+        IApprove(quote).approve(address(pad), type(uint256).max);
+        for (uint256 i; i < n; ++i) {
+            try pad.buy(token, each, 0, block.timestamp) {} catch {}
+        }
+    }
+}
+
+interface IApprove {
+    function approve(address, uint256) external returns (bool);
 }

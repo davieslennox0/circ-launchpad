@@ -7,24 +7,42 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
 import {PositionLocker} from "../../src/PositionLocker.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
-import {TickMath} from "../../src/libraries/uniswap/TickMath.sol";
-import {IUniswapV3Factory, IUniswapV3Pool, INonfungiblePositionManager, IWOKB} from "../../src/interfaces/IUniswapV3.sol";
+import {PoolKey, IPositionManager, IAllowanceTransfer, IWOKB} from "../../src/interfaces/IUniswapV4.sol";
 import {ICircuitNFT, IERC6551Registry} from "../../src/interfaces/ITapeOut.sol";
 import {Addresses} from "../../script/Addresses.sol";
 import {CurveConstants} from "../../script/CurveConstants.sol";
 import {CircDeploy} from "../../script/Deploy.s.sol";
 
-interface IPoolLiquidity {
-    function liquidity() external view returns (uint128);
+interface IStateView {
+    function getSlot0(bytes32 poolId)
+        external
+        view
+        returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee);
+    function getLiquidity(bytes32 poolId) external view returns (uint128);
 }
 
-/// @dev X Layer mainnet fork against the real Uniswap v3, TapeOut factory, ERC-6551 registry, WOKB and BEM.
-/// RPC: $XLAYER_RPC_URL, else the public endpoint. Optional $FORK_BLOCK pins the fork.
+interface IUniversalRouter {
+    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline) external payable;
+}
+
+/// @dev v4-periphery IV4Router.ExactInputSingleParams at the commit Universal Router 2.1.x pins (a7af5b3).
+struct ExactInputSingleParams {
+    PoolKey poolKey;
+    bool zeroForOne;
+    uint128 amountIn;
+    uint128 amountOutMinimum;
+    uint256 minHopPriceX36;
+    bytes hookData;
+}
+
+/// @dev X Layer mainnet fork against the real Uniswap v4 (PoolManager, PositionManager, Permit2, Universal Router 2.1.2),
+/// TapeOut factory, ERC-6551 registry, WOKB and BEM. RPC: $XLAYER_RPC_URL, else the public endpoint. Optional
+/// $FORK_BLOCK pins the fork.
 abstract contract ForkBase is Test {
     CurvePad pad;
     PositionLocker locker;
-    IUniswapV3Factory factory = IUniswapV3Factory(Addresses.V3_FACTORY);
-    INonfungiblePositionManager npm = INonfungiblePositionManager(Addresses.NPM);
+    IPositionManager posm = IPositionManager(Addresses.POSITION_MANAGER);
+    IStateView stateView = IStateView(Addresses.STATE_VIEW);
     IERC20 wokb = IERC20(Addresses.WOKB);
     IERC20 bem = IERC20(Addresses.BEM);
 
@@ -47,7 +65,13 @@ abstract contract ForkBase is Test {
         vm.startPrank(deployer);
         (pad, locker) = CircDeploy.deploy(deployer, protocol, sink);
         vm.stopPrank();
-        address[4] memory fresh = [address(pad), address(locker), address(pad.graduator()), address(pad.tokenDeployer())];
+        address[5] memory fresh = [
+            address(pad),
+            address(locker),
+            address(pad.graduator()),
+            address(pad.tokenDeployer()),
+            address(pad.hook())
+        ];
         for (uint256 i; i < fresh.length; ++i) {
             assertEq(wokb.balanceOf(fresh[i]), 0, "fresh deploy holds no WOKB");
             assertEq(bem.balanceOf(fresh[i]), 0, "fresh deploy holds no BEM");
@@ -83,21 +107,21 @@ abstract contract ForkBase is Test {
         return quote == Addresses.WOKB ? CurveConstants.WOKB_V_QUOTE0 : CurveConstants.BEM_V_QUOTE0;
     }
 
-    /// @dev sqrtPriceX96 of the pool when the token trades at (curve end price) * num / den, in quote per token.
-    function _sqrtAtMultiple(address token, address quote, uint256 num, uint256 den) internal pure returns (uint160) {
-        uint256 k = _vQuote0(quote) * uint256(CurveConstants.V_TOKEN0);
-        uint256 tEnd = CurveConstants.V_TOKEN0 - CurveConstants.CURVE_SUPPLY;
-        uint256 qEnd = Math.mulDiv(k, 1, tEnd, Math.Rounding.Ceil);
-        uint256 ratioX192 = token < quote
-            ? Math.mulDiv(qEnd * num, 1 << 192, tEnd * den)
-            : Math.mulDiv(tEnd * den, 1 << 192, qEnd * num);
-        return uint160(Math.sqrt(ratioX192));
+    function _key(LaunchToken t) internal view returns (PoolKey memory) {
+        (address quote,,,,,,,,,) = pad.curves(address(t));
+        return pad.graduator().poolKey(address(t), quote);
+    }
+
+    function _poolId(LaunchToken t) internal view returns (bytes32) {
+        return keccak256(abi.encode(_key(t)));
     }
 
     /// @dev The filling buy: sells the rest of the curve, which must leave it Complete (not graduated) with trading closed.
     function _complete(LaunchToken t, address buyer) internal {
-        (,,,, uint128 left,,,,,) = pad.curves(address(t));
+        (,,,, uint128 left,,,, uint64 launchBlock,) = pad.curves(address(t));
         assertGt(left, 0);
+        // Past the anti-snipe window, so one buy can take the rest of the curve.
+        if (block.number < launchBlock + pad.GUARD_BLOCKS()) vm.roll(launchBlock + pad.GUARD_BLOCKS());
         (, uint256 need) = pad.previewBuy(address(t), type(uint128).max);
         vm.expectEmit(true, false, false, false, address(pad));
         emit CurvePad.CurveCompleted(address(t));
@@ -108,7 +132,8 @@ abstract contract ForkBase is Test {
         (,,,, left,,,,, st) = pad.curves(address(t));
         assertEq(left, 0);
         assertEq(uint8(st), uint8(CurvePad.Status.Complete), "filling buy -> Complete");
-        assertFalse(t.graduated(), "filling buy does not graduate");
+        (uint160 sqrtP,,,) = stateView.getSlot0(_poolId(t));
+        assertEq(sqrtP, 0, "filling buy does not graduate: pool not initialized");
         vm.prank(bob);
         vm.expectRevert(CurvePad.CurveClosed.selector);
         pad.buy(address(t), 1e6, 0, block.timestamp);
@@ -119,32 +144,31 @@ abstract contract ForkBase is Test {
         vm.stopPrank();
     }
 
-    /// @dev Permissionless graduate() by a third-party keeper; returns the Graduated event's position id and pool.
-    function _graduateNow(LaunchToken t) internal returns (uint256 positionId, address pool) {
+    /// @dev Permissionless graduate() by a third-party keeper; returns the Graduated event's position id and pool id.
+    function _graduateNow(LaunchToken t) internal returns (uint256 positionId, bytes32 poolId) {
         (address quote,,,,,,,,,) = pad.curves(address(t));
         vm.recordLogs();
         vm.prank(makeAddr("keeper"));
         pad.graduate(address(t));
         Vm.Log[] memory logs = vm.getRecordedLogs();
-        bytes32 sig = keccak256("Graduated(address,address,uint256,uint256,uint256)");
+        bytes32 sig = keccak256("Graduated(address,bytes32,uint256,uint256,uint256)");
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter == address(pad) && logs[i].topics[0] == sig) {
-                pool = address(uint160(uint256(logs[i].topics[2])));
+                poolId = logs[i].topics[2];
                 (positionId,,) = abi.decode(logs[i].data, (uint256, uint256, uint256));
             }
         }
-        assertTrue(pool != address(0), "graduated");
-        assertEq(pool, factory.getPool(address(t), quote, 10_000));
+        assertTrue(poolId != bytes32(0), "graduated");
+        assertEq(poolId, _poolId(t), "graduated into the CircHook pool");
         (,,,,,,,,, CurvePad.Status st) = pad.curves(address(t));
         assertEq(uint8(st), uint8(CurvePad.Status.Graduated));
-        assertTrue(t.graduated());
         _assertGraduatorEmpty(address(t), quote);
         vm.expectRevert(CurvePad.AlreadyGraduated.selector);
         pad.graduate(address(t));
     }
 
     /// @dev Filling buy, then graduate().
-    function _graduate(LaunchToken t, address buyer) internal returns (uint256 positionId, address pool) {
+    function _graduate(LaunchToken t, address buyer) internal returns (uint256 positionId, bytes32 poolId) {
         _complete(t, buyer);
         return _graduateNow(t);
     }
@@ -157,13 +181,18 @@ abstract contract ForkBase is Test {
         assertEq(IERC20(Addresses.WOKB).balanceOf(g), 0, "graduator WOKB balance");
         assertEq(IERC20(Addresses.BEM).balanceOf(g), 0, "graduator BEM balance");
         assertEq(g.balance, 0, "graduator native balance");
-        (bool ok, bytes memory r) = address(npm).staticcall(abi.encodeWithSignature("balanceOf(address)", g));
+        (bool ok, bytes memory r) = address(posm).staticcall(abi.encodeWithSignature("balanceOf(address)", g));
         require(ok);
         assertEq(abi.decode(r, (uint256)), 0, "graduator holds no position NFT");
     }
 
-    function _positionLiquidity(uint256 positionId) internal view returns (uint128 liq) {
-        (,,,,,,, liq,,,,) = npm.positions(positionId);
+    /// @dev Pool price check: the pool's sqrt price squared vs the curve's final vQuote / vToken, within `relE18`.
+    function _assertOpensAtCurvePrice(LaunchToken t, bytes32 poolId, uint256 relE18) internal view {
+        (address quote, uint128 vQuote, uint128 vToken,,,,,,,) = pad.curves(address(t));
+        uint256 expectX192 =
+            address(t) < quote ? Math.mulDiv(vQuote, 1 << 192, vToken) : Math.mulDiv(vToken, 1 << 192, vQuote);
+        (uint160 sqrtP,,,) = stateView.getSlot0(poolId);
+        assertApproxEqRel(Math.mulDiv(sqrtP, sqrtP, 1), expectX192, relE18, "pool price ~ P_end");
     }
 
     /// @dev CurvePad must always hold at least every curve's real quote plus all accrued fees.
@@ -176,31 +205,31 @@ abstract contract ForkBase is Test {
         assertGe(IERC20(quote).balanceOf(address(pad)), owed, "pad solvent");
     }
 
-    // Direct pool swaps from the test contract (no router dependency).
-    address internal _swapping;
+    /// @dev Exact-in single-hop swap through Universal Router 2.1.2 (V4_SWAP: SWAP_EXACT_IN_SINGLE, SETTLE_ALL,
+    /// TAKE_ALL), paid via Permit2. Returns the amount of the other currency received.
+    function _routerSwap(address who, PoolKey memory key, address tokenIn, uint256 amountIn)
+        internal
+        returns (uint256 out)
+    {
+        bool zeroForOne = tokenIn == key.currency0;
+        address tokenOut = zeroForOne ? key.currency1 : key.currency0;
+        bytes[] memory params = new bytes[](3);
+        params[0] = abi.encode(ExactInputSingleParams(key, zeroForOne, uint128(amountIn), 0, 0, bytes("")));
+        params[1] = abi.encode(tokenIn, amountIn);
+        params[2] = abi.encode(tokenOut, uint256(0));
+        bytes[] memory inputs = new bytes[](1);
+        inputs[0] = abi.encode(abi.encodePacked(uint8(0x06), uint8(0x0c), uint8(0x0f)), params);
 
-    function _poolSwap(address pool, address tokenIn, uint256 amountIn) internal {
-        bool zeroForOne = tokenIn == _token0(pool);
-        _swapping = pool;
-        IUniswapV3Pool(pool).swap(
-            address(this),
-            zeroForOne,
-            int256(amountIn),
-            zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1,
-            abi.encode(tokenIn)
+        uint256 before = IERC20(tokenOut).balanceOf(who);
+        vm.startPrank(who);
+        IERC20(tokenIn).approve(Addresses.PERMIT2, type(uint256).max);
+        IAllowanceTransfer(Addresses.PERMIT2).approve(
+            tokenIn, Addresses.UNIVERSAL_ROUTER, uint160(amountIn), uint48(block.timestamp + 1 hours)
         );
-        _swapping = address(0);
-    }
-
-    function uniswapV3SwapCallback(int256 a0, int256 a1, bytes calldata data) external {
-        require(msg.sender == _swapping, "cb");
-        address tokenIn = abi.decode(data, (address));
-        IERC20(tokenIn).transfer(msg.sender, uint256(a0 > 0 ? a0 : a1));
-    }
-
-    function _token0(address pool) internal view returns (address t0) {
-        (bool ok, bytes memory r) = pool.staticcall(abi.encodeWithSignature("token0()"));
-        require(ok);
-        t0 = abi.decode(r, (address));
+        IUniversalRouter(Addresses.UNIVERSAL_ROUTER).execute(
+            abi.encodePacked(uint8(0x10)), inputs, block.timestamp + 1 hours
+        );
+        vm.stopPrank();
+        out = IERC20(tokenOut).balanceOf(who) - before;
     }
 }

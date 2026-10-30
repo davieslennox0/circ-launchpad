@@ -5,9 +5,12 @@ import sys
 
 RUNTIME_LIMIT, INIT_LIMIT = 24_576, 49_152
 raw = open(sys.argv[1]).read()
-data = json.loads(raw[raw.index("{"):])  # tolerate any leading log lines
-if not isinstance(data, dict) or not data:
-    sys.exit(f"unexpected sizes JSON: {raw[:500]}")
+try:
+    data = json.loads(raw[raw.index("{"):])  # tolerate any leading log lines
+except ValueError:
+    data = None
+if not isinstance(data, dict) or not data or not all(isinstance(v, dict) for v in data.values()):
+    sys.exit(f"forge build did not produce a size table (compile error?):\n{raw[:3000]}")
 
 bad = []
 print(f"{'contract':<28}{'runtime':>10}{'margin':>10}{'initcode':>10}{'margin':>10}")
