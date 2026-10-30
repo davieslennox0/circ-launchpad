@@ -12,7 +12,8 @@ library HookMiner {
     error SaltNotFound();
 
     /// @param pad the CurvePad address that will deploy the hook (CREATE2 deployer)
-    /// @return salt, hook the salt and the resulting hook address
+    /// @return salt the CREATE2 salt
+    /// @return hook the resulting hook address
     function mine(address pad, address poolManager, address positionManager)
         internal
         pure
