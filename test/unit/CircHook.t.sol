@@ -42,33 +42,50 @@ contract CircHookUnitTest is UnitBase {
         hook.allowAdd(keccak256(abi.encode(key)));
     }
 
-    function test_beforeAddLiquidity_requiresGraduatorAuthorisation() public {
-        // No authorisation: reverts even from the position manager.
+    function test_beforeAddLiquidity_rejectsWithoutAuthorisation() public {
         vm.prank(POOL_MANAGER);
         vm.expectRevert(CircHook.AddLiquidityNotAllowed.selector);
         hook.beforeAddLiquidity(posm, key, mlp, "");
+    }
 
-        vm.prank(graduator);
+    /// @dev allowAdd and the add must share a transaction (transient storage), as they do in Graduator.graduate. Foundry
+    /// doesn't carry transient storage across a test's top-level calls, so a harness plays Graduator and PoolManager in
+    /// one call. The real path (PoolManager -> hook via PositionManager) is covered by the fork suite.
+    function test_beforeAddLiquidity_oneShotAuthorisation() public {
+        HookHarness h = new HookHarness(posm);
+        h.run(key, mlp);
+    }
+}
+
+/// @dev Stands in for both Graduator and PoolManager of a dedicated CircHook instance.
+contract HookHarness {
+    CircHook public immutable hook;
+    address immutable posm;
+
+    constructor(address posm_) {
+        posm = posm_;
+        hook = new CircHook(address(this), address(this), posm_);
+    }
+
+    function run(PoolKey memory key, ModifyLiquidityParams memory mlp) external {
         hook.allowAdd(keccak256(abi.encode(key)));
 
         // Authorised pool, but the add doesn't come through the position manager.
-        vm.prank(POOL_MANAGER);
-        vm.expectRevert(CircHook.AddLiquidityNotAllowed.selector);
-        hook.beforeAddLiquidity(alice, key, mlp, "");
-
+        _expectNotAllowed(address(0xBEEF), key, mlp);
         // A different pool isn't covered by the authorisation.
-        PoolKey memory other = PoolKey(address(0xA), address(0xC), 10_000, 200, address(hook));
-        vm.prank(POOL_MANAGER);
-        vm.expectRevert(CircHook.AddLiquidityNotAllowed.selector);
-        hook.beforeAddLiquidity(posm, other, mlp, "");
-
+        PoolKey memory other = PoolKey(key.currency0, address(0xC), key.fee, key.tickSpacing, key.hooks);
+        _expectNotAllowed(posm, other, mlp);
         // The authorised add passes once...
-        vm.prank(POOL_MANAGER);
-        assertEq(hook.beforeAddLiquidity(posm, key, mlp, ""), CircHook.beforeAddLiquidity.selector);
-
+        require(hook.beforeAddLiquidity(posm, key, mlp, "") == CircHook.beforeAddLiquidity.selector, "authorised add");
         // ...and only once.
-        vm.prank(POOL_MANAGER);
-        vm.expectRevert(CircHook.AddLiquidityNotAllowed.selector);
-        hook.beforeAddLiquidity(posm, key, mlp, "");
+        _expectNotAllowed(posm, key, mlp);
+    }
+
+    function _expectNotAllowed(address sender, PoolKey memory key, ModifyLiquidityParams memory mlp) internal {
+        try hook.beforeAddLiquidity(sender, key, mlp, "") {
+            revert("expected AddLiquidityNotAllowed");
+        } catch (bytes memory err) {
+            require(bytes4(err) == CircHook.AddLiquidityNotAllowed.selector, "wrong error");
+        }
     }
 }

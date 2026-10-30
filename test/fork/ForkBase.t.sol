@@ -118,8 +118,10 @@ abstract contract ForkBase is Test {
 
     /// @dev The filling buy: sells the rest of the curve, which must leave it Complete (not graduated) with trading closed.
     function _complete(LaunchToken t, address buyer) internal {
-        (,,,, uint128 left,,,,,) = pad.curves(address(t));
+        (,,,, uint128 left,,,, uint64 launchBlock,) = pad.curves(address(t));
         assertGt(left, 0);
+        // Past the anti-snipe window, so one buy can take the rest of the curve.
+        if (block.number < launchBlock + pad.GUARD_BLOCKS()) vm.roll(launchBlock + pad.GUARD_BLOCKS());
         (, uint256 need) = pad.previewBuy(address(t), type(uint128).max);
         vm.expectEmit(true, false, false, false, address(pad));
         emit CurvePad.CurveCompleted(address(t));
