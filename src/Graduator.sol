@@ -99,6 +99,8 @@ contract Graduator {
         uint256 quoteBefore = IERC20(quote).balanceOf(address(this));
         r.positionId = positionManager.nextTokenId();
         _mint(key, liq, amt0, amt1, r.poolId);
+        // Mint and settlement are done: from here on anyone may add or remove their own liquidity in this pool.
+        hook.openPool(r.poolId);
         r.tokenUsed = tokenBefore - IERC20(token).balanceOf(address(this));
         r.quoteUsed = quoteBefore - IERC20(quote).balanceOf(address(this));
 
@@ -110,7 +112,8 @@ contract Graduator {
         if (r.quoteLeft != 0) IERC20(quote).safeTransfer(pad, r.quoteLeft);
     }
 
-    /// @dev MINT_POSITION (owner = this) then SETTLE_PAIR, paid through Permit2. The hook admits exactly this one add.
+    /// @dev MINT_POSITION (owner = this) then SETTLE_PAIR, paid through Permit2. The hook admits exactly this one add; the
+    /// pool stays closed to everyone else until `openPool` after this returns.
     function _mint(PoolKey memory key, uint128 liq, uint256 amt0, uint256 amt1, bytes32 poolId) internal {
         _approve(key.currency0, amt0);
         _approve(key.currency1, amt1);

@@ -9,8 +9,9 @@ Circ is a launchpad on X Layer (chain 196) for tokens bound to TapeOut Circuit N
 - **Graduation:** the buy that sells out the curve marks it Complete and emits `CurveCompleted`. Trading closes at
   that point. Anyone can then call `graduate(token)`, which seeds a full-range Uniswap v4 position (1% fee tier) in a
   Circ-hooked pool with the raise and the reserved tokens. The position is locked forever in `PositionLocker`.
-  - `CircHook` lets only Circ's Graduator initialize the pool or add liquidity, so graduation always opens at the
-    curve's final price. It has no swap hooks, so the pool trades like a vanilla v4 pool.
+  - `CircHook` lets only Circ's Graduator initialize the pool and seed it, so graduation always opens at the curve's
+    final price. Once the graduation mint has settled, anyone may add or remove their own liquidity. The hook has no
+    swap hooks, so the pool trades like a vanilla v4 pool.
 - **Fees:** curve fees (1%) and LP fees are split 50% to the Circuit's TapeOut Container, 30% to the protocol and 20% to
   an ecosystem sink.
   - Fees are pull-based.
@@ -32,7 +33,8 @@ Circ is a launchpad on X Layer (chain 196) for tokens bound to TapeOut Circuit N
 | Raise per launch | ≈ $13.4k (≈ 118.25 WOKB or ≈ 612.01 BEM) |
 
 The constants are solved exactly in `script/solve_constants.py` and stored in `script/CurveConstants.sol`. The USD
-figures use OKB and BEM prices from 2026-10-29.
+figures use OKB and BEM prices from 2026-10-29. At deploy time, `script/Deploy.s.sol` re-solves each `vQuote0` from live
+on-chain prices and prints the values for approval.
 
 ## Layout
 

@@ -28,4 +28,9 @@ library Addresses {
     address internal constant NANDOUT = 0x8A60B4A4BCf4066F5E5F9A406fE09c5e4f52a58E;
     address internal constant NANDOUT_HOLDER = 0x934d315C0a9C0866D393B722C1805F2B6b20b816;
     address internal constant BEM_WOKB_POOL = 0x2CcF8aa17F5DF9Fb5D51C9de12135a913fF29f7A;
+
+    // Live-price sources for deploy-time curve constants (canonical Uniswap v3 pools, checked 2026-10-30):
+    // USD₮0/WOKB 0.05%, the deepest WOKB/USD pool on X Layer (~1,677 WOKB + ~$176k USD₮0), and BEM/WOKB 1% above.
+    address internal constant USDT0 = 0x779Ded0c9e1022225f8E0630b35a9b54bE713736;
+    address internal constant WOKB_USDT0_POOL = 0xe3BE6A0137f1b0602Fc1a4841686f43B340a5082;
 }

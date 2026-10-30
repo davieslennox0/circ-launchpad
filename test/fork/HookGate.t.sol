@@ -5,8 +5,12 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ForkBase} from "./ForkBase.t.sol";
 import {CircHook} from "../../src/CircHook.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
-import {PoolKey, ModifyLiquidityParams} from "../../src/interfaces/IUniswapV4.sol";
+import {PoolKey, ModifyLiquidityParams, IAllowanceTransfer} from "../../src/interfaces/IUniswapV4.sol";
 import {Addresses} from "../../script/Addresses.sol";
+
+interface IERC20Approve {
+    function approve(address spender, uint256 amount) external returns (bool);
+}
 
 interface IPoolManagerFull {
     function initialize(PoolKey memory key, uint160 sqrtPriceX96) external returns (int24 tick);
@@ -16,8 +20,9 @@ interface IPoolManagerFull {
         returns (int256 callerDelta, int256 feesAccrued);
 }
 
-/// @dev Third parties try to front-run or crowd the graduation pool. The CircHook pool can only be initialized by
-/// Graduator and only receives Graduator's own liquidity, so graduation always opens at P_end.
+/// @dev Third parties try to front-run the graduation pool. The CircHook pool can only be initialized by Graduator and
+/// only receives Graduator's own liquidity until the graduation mint completes, so graduation always opens at P_end.
+/// After that, the pool is open to anyone's liquidity.
 contract ForkHookGateTest is ForkBase {
     IPoolManagerFull pm = IPoolManagerFull(Addresses.POOL_MANAGER);
 
@@ -83,28 +88,55 @@ contract ForkHookGateTest is ForkBase {
         _assertOpensAtCurvePrice(t, poolId, 0.001e18);
     }
 
-    function test_fork_thirdPartyCannotAddLiquidityAfterGraduation() public {
+    /// @dev After the graduation mint, the pool is open: anyone may add and remove their own liquidity, while the locked
+    /// graduation position never loses liquidity.
+    function test_fork_thirdPartyLiquidityOpensAfterGraduation() public {
         LaunchToken t = _launch(Addresses.BEM, 2);
         (uint256 positionId, bytes32 poolId) = _graduate(t, alice);
-        uint128 liq = posm.getPositionLiquidity(positionId);
+        uint128 locked = posm.getPositionLiquidity(positionId);
         PoolKey memory key = _key(t);
+        assertTrue(pad.hook().isOpen(poolId), "pool opened at graduation");
+        vm.prank(alice);
+        t.transfer(attacker, 10_000_000 ether);
 
-        // Through the v4 PositionManager (the only sender the hook ever admits, and only on Graduator's authorisation).
+        // Third-party add through the v4 PositionManager now succeeds.
+        vm.startPrank(attacker);
+        _permit(key.currency0);
+        _permit(key.currency1);
+        uint256 lpId = posm.nextTokenId();
         bytes[] memory params = new bytes[](2);
         params[0] = abi.encode(
-            key, int24(-887_200), int24(887_200), uint256(1e18), type(uint128).max, type(uint128).max, attacker, bytes("")
+            key, int24(-887_200), int24(887_200), uint256(1e15), type(uint128).max, type(uint128).max, attacker, bytes("")
         );
         params[1] = abi.encode(key.currency0, key.currency1);
-        vm.prank(attacker);
-        vm.expectRevert(_hookRevert(CircHook.beforeAddLiquidity.selector, CircHook.AddLiquidityNotAllowed.selector));
         posm.modifyLiquidities(abi.encode(abi.encodePacked(uint8(0x02), uint8(0x0d)), params), block.timestamp);
+        assertEq(posm.ownerOf(lpId), attacker);
+        assertEq(posm.getPositionLiquidity(lpId), 1e15);
+        assertEq(stateView.getLiquidity(poolId), uint256(locked) + 1e15, "pool = locked + third-party");
 
-        // Directly on the PoolManager from an arbitrary contract.
-        _directKey = key;
-        vm.expectRevert(_hookRevert(CircHook.beforeAddLiquidity.selector, CircHook.AddLiquidityNotAllowed.selector));
-        pm.unlock("");
+        // ...and they can remove their own liquidity again.
+        params[0] = abi.encode(lpId, uint256(1e15), uint128(0), uint128(0), bytes(""));
+        params[1] = abi.encode(key.currency0, key.currency1, attacker);
+        posm.modifyLiquidities(abi.encode(abi.encodePacked(uint8(0x01), uint8(0x11)), params), block.timestamp);
+        assertEq(posm.getPositionLiquidity(lpId), 0);
 
-        assertEq(stateView.getLiquidity(poolId), liq, "pool liquidity is still only the locked position");
+        // The locked graduation position can't be touched by anyone but its owner (the locker, which has no path).
+        params[0] = abi.encode(positionId, uint256(locked), uint128(0), uint128(0), bytes(""));
+        vm.expectRevert(abi.encodeWithSelector(bytes4(keccak256("NotApproved(address)")), attacker));
+        posm.modifyLiquidities(abi.encode(abi.encodePacked(uint8(0x01), uint8(0x11)), params), block.timestamp);
+        vm.stopPrank();
+
+        assertEq(posm.getPositionLiquidity(positionId), locked, "locked liquidity never decreases");
+        assertEq(stateView.getLiquidity(poolId), locked);
+        locker.collect(positionId);
+        assertEq(posm.getPositionLiquidity(positionId), locked, "collect leaves liquidity untouched");
+    }
+
+    function _permit(address token) internal {
+        IERC20Approve(token).approve(Addresses.PERMIT2, type(uint256).max);
+        IAllowanceTransfer(Addresses.PERMIT2).approve(
+            token, Addresses.POSITION_MANAGER, type(uint160).max, uint48(block.timestamp + 1 hours)
+        );
     }
 
     function test_fork_otherPoolsDontAffectGraduation() public {
@@ -118,14 +150,5 @@ contract ForkHookGateTest is ForkBase {
         (, bytes32 poolId) = _graduate(t, alice);
         _assertOpensAtCurvePrice(t, poolId, 0.001e18);
         assertTrue(poolId != keccak256(abi.encode(vanilla)));
-    }
-
-    // Direct PoolManager liquidity attempt (from this test contract, i.e. an arbitrary third party).
-    PoolKey internal _directKey;
-
-    function unlockCallback(bytes calldata) external returns (bytes memory) {
-        require(msg.sender == address(pm), "cb");
-        pm.modifyLiquidity(_directKey, ModifyLiquidityParams(-887_200, 887_200, 1e18, bytes32(0)), "");
-        return "";
     }
 }

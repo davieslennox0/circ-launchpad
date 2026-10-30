@@ -71,10 +71,10 @@ contract CurvePad is FeeVault {
     }
 
     uint256 public constant TOTAL_SUPPLY = 1_000_000_000 ether;
-    uint256 public constant GUARD_BLOCKS = 5;
-    /// @notice During the first GUARD_BLOCKS after launch, at most this many curve tokens can be bought per block, summed
-    /// across all buyers (the creator's dev-buy inside createLaunch is exempt and not counted).
-    uint256 public constant MAX_EARLY_BUY = TOTAL_SUPPLY / 100;
+    uint256 public constant GUARD_BLOCKS = 30;
+    /// @notice During the first GUARD_BLOCKS after launch, at most this many curve tokens (0.5% of supply) can be bought
+    /// per block, summed across all buyers (the creator's dev-buy inside createLaunch is exempt and not counted).
+    uint256 public constant MAX_EARLY_BUY = TOTAL_SUPPLY / 200;
 
     address public immutable wokb;
     address public immutable bem;

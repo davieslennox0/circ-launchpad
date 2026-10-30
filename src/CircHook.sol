@@ -8,9 +8,11 @@ import {PoolKey, ModifyLiquidityParams} from "./interfaces/IUniswapV4.sol";
 /// delta-returning hooks, so swaps behave exactly like a vanilla v4 pool):
 /// - beforeInitialize: only Circ's Graduator may initialize a pool that uses this hook, so nobody can create a
 ///   graduation pool early or at a wrong price.
-/// - beforeAddLiquidity: liquidity can only be added by Graduator's own mint. Graduator authorises exactly one add for
-///   one pool (transient, same transaction) and then mints through the v4 PositionManager, which is the `sender` the
-///   PoolManager reports. Every other add, before or after graduation, reverts.
+/// - beforeAddLiquidity: until a pool's graduation mint has completed, the only add allowed is Graduator's own mint.
+///   Graduator authorises exactly one add for one pool (transient storage, same transaction, consumed on first use) and
+///   mints through the v4 PositionManager, which is the `sender` the PoolManager reports. After the mint (including its
+///   settlement) Graduator opens the pool, and from then on anyone may add or remove their own liquidity. Removing is
+///   never hooked; the graduation position is locked by PositionLocker, not by the hook.
 /// The address must carry exactly the BEFORE_INITIALIZE (1 << 13) and BEFORE_ADD_LIQUIDITY (1 << 11) flag bits; CurvePad
 /// checks this when it deploys the hook with a mined CREATE2 salt.
 contract CircHook {
@@ -21,6 +23,11 @@ contract CircHook {
     address public immutable graduator;
     address public immutable poolManager;
     address public immutable positionManager;
+
+    /// @notice Pools whose graduation mint has completed: open to anyone's liquidity.
+    mapping(bytes32 poolId => bool) public isOpen;
+
+    event PoolOpened(bytes32 indexed poolId);
 
     error NotPoolManager();
     error NotGraduator();
@@ -40,6 +47,13 @@ contract CircHook {
         }
     }
 
+    /// @notice Graduator opens a pool to third-party liquidity once its graduation mint has fully settled.
+    function openPool(bytes32 poolId) external {
+        if (msg.sender != graduator) revert NotGraduator();
+        isOpen[poolId] = true;
+        emit PoolOpened(poolId);
+    }
+
     function beforeInitialize(address sender, PoolKey calldata, uint160) external view returns (bytes4) {
         if (msg.sender != poolManager) revert NotPoolManager();
         if (sender != graduator) revert NotGraduator();
@@ -51,11 +65,13 @@ contract CircHook {
         returns (bytes4)
     {
         if (msg.sender != poolManager) revert NotPoolManager();
+        bytes32 poolId = keccak256(abi.encode(key));
+        if (isOpen[poolId]) return this.beforeAddLiquidity.selector;
         bytes32 allowed;
         assembly ("memory-safe") {
             allowed := tload(ALLOWED_ADD_SLOT)
         }
-        if (sender != positionManager || allowed == bytes32(0) || allowed != keccak256(abi.encode(key))) {
+        if (sender != positionManager || allowed == bytes32(0) || allowed != poolId) {
             revert AddLiquidityNotAllowed();
         }
         assembly ("memory-safe") {

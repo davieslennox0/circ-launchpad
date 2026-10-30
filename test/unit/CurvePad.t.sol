@@ -338,7 +338,7 @@ contract CurvePadUnitTest is UnitBase {
         LaunchToken t = _launch(address(wokb));
         uint256 cap = pad.MAX_EARLY_BUY();
         vm.prank(alice);
-        pad.buy(address(t), 0.1 ether, 0, block.timestamp); // ~2.8M tokens at the launch price: under the 10M cap
+        pad.buy(address(t), 0.1 ether, 0, block.timestamp); // ~2.8M tokens at the launch price: under the 5M (0.5%) cap
         uint256 a = t.balanceOf(alice);
         assertLt(a, cap);
         vm.prank(bob);

@@ -55,6 +55,27 @@ contract CircHookUnitTest is UnitBase {
         HookHarness h = new HookHarness(posm);
         h.run(key, mlp);
     }
+
+    function test_openPool_onlyGraduator() public {
+        vm.prank(alice);
+        vm.expectRevert(CircHook.NotGraduator.selector);
+        hook.openPool(keccak256(abi.encode(key)));
+    }
+
+    function test_openPool_thenAnyoneMayAdd() public {
+        bytes32 id = keccak256(abi.encode(key));
+        assertFalse(hook.isOpen(id));
+        vm.prank(graduator);
+        hook.openPool(id);
+        assertTrue(hook.isOpen(id));
+        vm.prank(POOL_MANAGER);
+        assertEq(hook.beforeAddLiquidity(alice, key, mlp, ""), CircHook.beforeAddLiquidity.selector);
+        // Other (unopened) pools stay gated.
+        PoolKey memory other = PoolKey(address(0xA), address(0xC), 10_000, 200, address(hook));
+        vm.prank(POOL_MANAGER);
+        vm.expectRevert(CircHook.AddLiquidityNotAllowed.selector);
+        hook.beforeAddLiquidity(alice, other, mlp, "");
+    }
 }
 
 /// @dev Stands in for both Graduator and PoolManager of a dedicated CircHook instance.
