@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {UnitBase} from "./Base.t.sol";
+import {MockNPM} from "./Mocks.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
 import {FeeVault} from "../../src/FeeVault.sol";
 import {LaunchToken} from "../../src/LaunchToken.sol";
