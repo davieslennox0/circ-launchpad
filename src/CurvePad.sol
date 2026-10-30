@@ -4,6 +4,8 @@ pragma solidity ^0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {TickMath} from "./libraries/uniswap/TickMath.sol";
 import {FeeVault} from "./FeeVault.sol";
 import {PositionLocker} from "./PositionLocker.sol";
 import {CurveMath} from "./libraries/CurveMath.sol";
@@ -157,6 +159,8 @@ contract CurvePad is FeeVault {
         if (
             PositionLocker(p.locker).pad() != address(this)
                 || address(PositionLocker(p.locker).positionManager()) != p.positionManager
+                || IPositionManager(p.positionManager).poolManager() != p.poolManager
+                || IPositionManager(p.positionManager).permit2() != p.permit2
         ) {
             revert BadConfig();
         }
@@ -400,8 +404,8 @@ contract CurvePad is FeeVault {
         _graduate(token, c);
     }
 
-    /// @dev Unlocks the token, hands the LP tokens and the raise to Graduator for pool setup and the locked mint, and books
-    /// whatever quote comes back (normalisation proceeds and rounding) to the protocol.
+    /// @dev Hands the LP tokens and the raise to Graduator for pool setup and the locked mint, and books whatever quote
+    /// comes back (rounding dust) to the protocol.
     function _graduate(address token, Curve storage c) internal {
         c.status = Status.Graduated;
         address quote = c.quote;
@@ -458,5 +462,16 @@ contract CurvePad is FeeVault {
             q.vQuote0 == 0 || q.lpTokens == 0 || q.curveSupply == 0 || q.vToken0 <= q.curveSupply
                 || uint256(q.curveSupply) + q.lpTokens != TOTAL_SUPPLY
         ) revert BadConfig();
+        // The graduation price must be representable in Uniswap for either token ordering, or graduate() could never
+        // succeed for this quote asset.
+        uint256 tEnd = q.vToken0 - q.curveSupply;
+        uint256 qEnd = Math.mulDiv(q.vQuote0, q.vToken0, tEnd);
+        _checkSqrtRange(Math.mulDiv(qEnd, 1 << 192, tEnd));
+        _checkSqrtRange(Math.mulDiv(tEnd, 1 << 192, qEnd));
+    }
+
+    function _checkSqrtRange(uint256 ratioX192) internal pure {
+        uint256 s = Math.sqrt(ratioX192);
+        if (s < TickMath.MIN_SQRT_RATIO || s >= TickMath.MAX_SQRT_RATIO) revert BadConfig();
     }
 }

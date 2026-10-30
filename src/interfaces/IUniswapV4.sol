@@ -28,6 +28,8 @@ interface IPoolManager {
 /// @dev v4-periphery PositionManager (ERC-721 positions, action-encoded liquidity changes).
 interface IPositionManager {
     function modifyLiquidities(bytes calldata unlockData, uint256 deadline) external payable;
+    function poolManager() external view returns (address);
+    function permit2() external view returns (address);
     function nextTokenId() external view returns (uint256);
     function getPositionLiquidity(uint256 tokenId) external view returns (uint128);
     function ownerOf(uint256 tokenId) external view returns (address);

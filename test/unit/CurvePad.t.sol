@@ -501,6 +501,59 @@ contract CurvePadUnitTest is UnitBase {
         );
     }
 
+    function test_constructorRejectsMismatchedV4Wiring() public {
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2);
+        address wrongPosm = address(new MockNPM(address(0xBAD), PERMIT2)); // posm wired to another PoolManager
+        PositionLocker2 l = new PositionLocker2(wrongPosm, predicted);
+        vm.expectRevert(CurvePad.BadConfig.selector);
+        new CurvePad(
+            CurvePad.Params(
+                address(wokb),
+                address(bem),
+                CurveConstants.wokb(),
+                CurveConstants.bem(),
+                address(cfactory),
+                address(registry),
+                IMPL,
+                POOL_MANAGER,
+                wrongPosm,
+                PERMIT2,
+                address(l),
+                protocol,
+                sink,
+                bytes32(0)
+            )
+        );
+    }
+
+    function test_constructorRejectsUnrepresentableGraduationPrice() public {
+        CurvePad.QuoteConfig memory bad = CurveConstants.wokb();
+        // 1 wei of virtual quote: P_end is so small that the inverse ordering's price doesn't fit Q64.96 at all. The
+        // constructor refuses it (range check, or overflow while computing it); either way no deploy.
+        bad.vQuote0 = 1;
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        PositionLocker2 l = new PositionLocker2(posm, predicted);
+        vm.expectRevert();
+        new CurvePad(
+            CurvePad.Params(
+                address(wokb),
+                address(bem),
+                bad,
+                CurveConstants.bem(),
+                address(cfactory),
+                address(registry),
+                IMPL,
+                POOL_MANAGER,
+                posm,
+                PERMIT2,
+                address(l),
+                protocol,
+                sink,
+                bytes32(0)
+            )
+        );
+    }
+
     function test_tokenDeployer_onlyPad() public {
         TokenDeployer d = pad.tokenDeployer();
         vm.prank(alice);

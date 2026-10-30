@@ -62,5 +62,13 @@ contract MockWOKB is ERC20 {
     }
 }
 
-/// @dev Only needs to exist for the locker's constructor in unit tests (graduation is covered by fork tests).
-contract MockNPM {}
+/// @dev Stands in for the v4 PositionManager's wiring getters (graduation itself is covered by fork tests).
+contract MockNPM {
+    address public poolManager;
+    address public permit2;
+
+    constructor(address poolManager_, address permit2_) {
+        poolManager = poolManager_;
+        permit2 = permit2_;
+    }
+}

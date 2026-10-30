@@ -38,7 +38,7 @@ abstract contract UnitBase is Test {
         registry = new MockRegistry();
         wokb = new MockWOKB();
         bem = new MockQuote("BEM", 8);
-        posm = address(new MockNPM());
+        posm = address(new MockNPM(POOL_MANAGER, PERMIT2));
         cfactory.setCPU(address(nft), true);
         nft.mint(creator, 1);
         nft.mint(creator, 2);
