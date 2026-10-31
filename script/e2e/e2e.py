@@ -387,7 +387,7 @@ def main():
         out(f"  - Nandout #{circuit_id} Container {container}: {'already opened' if opened else 'not opened yet'}; "
             f"open fee {okb(open_fee)} OKB; gas price {gp / 1e9:.4f} gwei")
         # Cost estimate (gas from the anvil-fork rehearsal, script/e2e/README.md).
-        deploy_gas, e2e_gas = 12_500_000, 4_500_000
+        deploy_gas, e2e_gas = 8_600_000, 4_500_000
         out(f"  - estimate: TEST deploy {okb(deploy_gas * gp)} OKB gas; e2e run {okb(e2e_gas * gp)} OKB gas "
             f"+ ~0.19 OKB value (fill ~0.1, Container open {okb(0 if opened else open_fee)}, withdraw fee 0.0013); "
             f"prod deploy {okb(deploy_gas * gp)} OKB gas")
@@ -694,7 +694,7 @@ def main():
     out(f"- msg.value spent (cap 0.5 OKB): {okb(SPENT['value'])} OKB")
     for ph, w in GAS.items():
         out(f"- gas, {ph}: {okb(w)} OKB")
-    out(f"- prod deploy estimate: ~{okb(GAS.get('deploy', 12_500_000 * gas_price()))} OKB gas (same contracts)")
+    out(f"- prod deploy estimate: ~{okb(GAS.get('deploy', 8_600_000 * gas_price()))} OKB gas (same contracts)")
     passed = sum(1 for r in RESULTS if r[1] == "PASS")
     out(f"- checks: {passed} PASS, {sum(1 for r in RESULTS if r[1] == 'FAIL')} FAIL, "
         f"{sum(1 for r in RESULTS if r[1] == 'SKIPPED')} SKIPPED")
