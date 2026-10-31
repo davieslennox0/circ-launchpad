@@ -57,6 +57,9 @@ class Abort(Exception):
 # ---------------------------------------------------------------------------------------------------------- logging
 
 _log_lines = []
+RESUME = os.environ.get("E2E_RESUME_FROM", "")  # e.g. "7b": continue a stopped run on the deployed instance
+if RESUME and os.path.exists(LOG_PATH):
+    _log_lines = open(LOG_PATH).read().rstrip("\n").split("\n")
 
 
 def out(line=""):
@@ -98,11 +101,19 @@ def _run(args, env=None):
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
 
+TRANSIENT = ("null response", "timed out", "timeout", "connection", "429", "error sending request", "502", "503")
+
+
 def cast(*args):
-    rc, so, se = _run([*args])
-    if rc != 0:
-        raise Abort(f"cast {args[0]} failed: {se[-600:]}")
-    return so
+    """Read-only cast commands, retried on transient RPC errors."""
+    for attempt in range(6):
+        rc, so, se = _run([*args])
+        if rc == 0:
+            return so
+        if not any(t in se.lower() for t in TRANSIENT):
+            break
+        time.sleep(2 + 3 * attempt)
+    raise Abort(f"cast {args[0]} failed: {se[-600:]}")
 
 
 def call(to, sig, *args, frm=None, value=0):
@@ -193,14 +204,28 @@ def send(w, to, sig, *args, value=0, sweep=False, label=""):
     a = ["send", to]
     if sig:
         a += [sig, *[_arg(x) for x in args]]
-    a += ["--rpc-url", RPC, "--json", *w.signer_args()]
+    a += ["--rpc-url", RPC, "--async", *w.signer_args()]
     if value:
         a += ["--value", str(value)]
+    nonce = int(cast("nonce", w.addr, "--rpc-url", RPC))
     rc, so, se = _run(a)
     if rc != 0:
-        raise Abort(f"{label or sig}: transaction not sent / reverted: {se[-800:]}")
-    r = json.loads(so)
-    h = r["transactionHash"]
+        time.sleep(5)
+        if int(cast("nonce", w.addr, "--rpc-url", RPC)) > nonce:
+            raise Abort(f"{label or sig}: RPC error after the tx was submitted (nonce {nonce} used); check the "
+                        f"explorer for {w.addr} before resuming: {se[-300:]}")
+        raise Abort(f"{label or sig}: transaction not sent (simulation reverted or RPC error): {se[-800:]}")
+    h = so.strip().splitlines()[-1].strip()
+    r = None
+    for attempt in range(60):  # up to ~3 minutes
+        rc2, so2, _ = _run(["receipt", h, "--json", "--rpc-url", RPC])
+        if rc2 == 0 and so2.startswith("{"):
+            r = json.loads(so2)
+            break
+        time.sleep(3)
+    if r is None:
+        out(f"  - tx `{h}` submitted, receipt not available: {EXPLORER}{h}")
+        raise Abort(f"{label or sig}: no receipt after 3 minutes")
     if int(r["status"], 0) != 1:
         out(f"  tx `{h}` {EXPLORER}{h}")
         raise Abort(f"{label or sig}: reverted on chain")
@@ -347,8 +372,13 @@ def tick_sqrt(t):
 # ---------------------------------------------------------------------------------------------------------------- main
 
 def main():
-    out("# CIRC-TEST end-to-end results")
-    out()
+    if not RESUME:
+        out("# CIRC-TEST end-to-end results")
+        out()
+    else:
+        out()
+        out(f"## Resumed from step {RESUME} ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}) on the same CIRC-TEST instance")
+
     chain = int(cast("chain-id", "--rpc-url", RPC))
     out(f"- network: X Layer chain id {chain}{' (**anvil fork rehearsal**, nothing on chain)' if FORK else ' (mainnet)'}")
     out(f"- started: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}, block {block_number()}")
@@ -369,202 +399,222 @@ def main():
     circuit_id = int(os.environ.get("CIRCUIT_ID", "2"))
     ours = [deployer, keeper, buyer]
 
-    # ------------------------------------------------------------------ 0. preflight
-    PHASE["name"] = "preflight"
-    with Step("0. Preflight", [deployer, keeper, buyer, holder], []):
-        if holder.addr.lower() != NANDOUT_HOLDER.lower():
-            out(f"  note: NANDOUT_KEY is {holder.addr}, not the known holder {NANDOUT_HOLDER}")
-        addrs = {w.addr.lower() for w in ours + [holder]}
-        check("preflight", len(addrs) == 4, "deployer, keeper, buyer and Nandout wallet are four distinct addresses")
-        check("preflight", protocol.lower() != sink.lower(), "CIRC_PROTOCOL and CIRC_SINK differ (needed for the split check)")
-        owner = call(NANDOUT, "ownerOf(uint256)(address)", circuit_id)[0]
-        check("preflight", owner.lower() == holder.addr.lower(), f"Nandout #{circuit_id} is held by the Nandout wallet")
-        container = call(REGISTRY, "account(address,bytes32,uint256,address,uint256)(address)", CONTAINER_IMPL,
-                         "0x" + "00" * 32, 196, NANDOUT, circuit_id)[0]
-        opened = len(cast("code", container, "--rpc-url", RPC)) > 2
-        open_fee = call_int(OPENER, "FEE()(uint256)")
-        gp = gas_price()
-        out(f"  - Nandout #{circuit_id} Container {container}: {'already opened' if opened else 'not opened yet'}; "
-            f"open fee {okb(open_fee)} OKB; gas price {gp / 1e9:.4f} gwei")
-        # Cost estimate (gas from the anvil-fork rehearsal, script/e2e/README.md).
-        deploy_gas, e2e_gas = 8_600_000, 4_500_000
-        out(f"  - estimate: TEST deploy {okb(deploy_gas * gp)} OKB gas; e2e run {okb(e2e_gas * gp)} OKB gas "
-            f"+ ~0.19 OKB value (fill ~0.1, Container open {okb(0 if opened else open_fee)}, withdraw fee 0.0013); "
-            f"prod deploy {okb(deploy_gas * gp)} OKB gas")
-        for w, need in ((deployer, 3 * 10**15), (keeper, (0 if opened else open_fee) + 3 * 10**15),
-                        (buyer, 115 * 10**15), (holder, 2 * 10**15)):
-            check("preflight", native(w.addr) >= need, f"{w.name} {w.addr} holds >= {okb(need)} OKB")
+    if not RESUME or RESUME == "0":
+        # ------------------------------------------------------------------ 0. preflight
+        PHASE["name"] = "preflight"
+        with Step("0. Preflight", [deployer, keeper, buyer, holder], []):
+            if holder.addr.lower() != NANDOUT_HOLDER.lower():
+                out(f"  note: NANDOUT_KEY is {holder.addr}, not the known holder {NANDOUT_HOLDER}")
+            addrs = {w.addr.lower() for w in ours + [holder]}
+            check("preflight", len(addrs) == 4, "deployer, keeper, buyer and Nandout wallet are four distinct addresses")
+            check("preflight", protocol.lower() != sink.lower(), "CIRC_PROTOCOL and CIRC_SINK differ (needed for the split check)")
+            owner = call(NANDOUT, "ownerOf(uint256)(address)", circuit_id)[0]
+            check("preflight", owner.lower() == holder.addr.lower(), f"Nandout #{circuit_id} is held by the Nandout wallet")
+            container = call(REGISTRY, "account(address,bytes32,uint256,address,uint256)(address)", CONTAINER_IMPL,
+                             "0x" + "00" * 32, 196, NANDOUT, circuit_id)[0]
+            opened = len(cast("code", container, "--rpc-url", RPC)) > 2
+            open_fee = call_int(OPENER, "FEE()(uint256)")
+            gp = gas_price()
+            out(f"  - Nandout #{circuit_id} Container {container}: {'already opened' if opened else 'not opened yet'}; "
+                f"open fee {okb(open_fee)} OKB; gas price {gp / 1e9:.4f} gwei")
+            # Cost estimate (gas from the anvil-fork rehearsal, script/e2e/README.md).
+            deploy_gas, e2e_gas = 8_600_000, 4_500_000
+            out(f"  - estimate: TEST deploy {okb(deploy_gas * gp)} OKB gas; e2e run {okb(e2e_gas * gp)} OKB gas "
+                f"+ ~0.19 OKB value (fill ~0.1, Container open {okb(0 if opened else open_fee)}, withdraw fee 0.0013); "
+                f"prod deploy {okb(deploy_gas * gp)} OKB gas")
+            for w, need in ((deployer, 3 * 10**15), (keeper, (0 if opened else open_fee) + 3 * 10**15),
+                            (buyer, 108 * 10**15), (holder, 2 * 10**15)):
+                check("preflight", native(w.addr) >= need, f"{w.name} {w.addr} holds >= {okb(need)} OKB")
 
-    # ------------------------------------------------------------------ 1. deploy
-    PHASE["name"] = "deploy"
-    pad = os.environ.get("E2E_PAD")
-    with Step("1. Deploy CIRC-TEST (script/Deploy.s.sol:DeployTest)", [deployer], []):
-        if pad:
-            out(f"  reusing E2E_PAD {pad}")
-        else:
-            env = dict(os.environ, PRIVATE_KEY=deployer.key, CIRC_PROTOCOL=protocol, CIRC_SINK=sink)
-            p = subprocess.run(["forge", "script", "script/Deploy.s.sol:DeployTest", "--rpc-url", RPC, "--broadcast",
-                                "--slow", "-vv"], cwd=ROOT, capture_output=True, text=True, env=env)
-            text = p.stdout + p.stderr
-            if p.returncode != 0:
-                raise Abort("forge script DeployTest failed:\n" + text[-1500:])
-            m = re.findall(r"CurvePad +(0x[0-9a-fA-F]{40})", text)
-            pad = m[-1]
-            bj = os.path.join(ROOT, "broadcast", "Deploy.s.sol", str(chain), "run-latest.json")
-            b = json.load(open(bj))
-            for rc in b["receipts"]:
-                h = rc["transactionHash"]
-                fee = int(rc["gasUsed"], 0) * int(rc.get("effectiveGasPrice", "0x0"), 0)
-                GAS["deploy"] = GAS.get("deploy", 0) + fee
-                out(f"  - tx `{h}` (deploy, gas {int(rc['gasUsed'], 0):,})" + ("  _(anvil fork)_" if FORK else ""))
-                out(f"    {EXPLORER}{h}")
-            for ln in text.splitlines():
-                if re.search(r"TEST_|LABEL|PositionLocker|CurvePad|CircHook|Graduator|TokenDeployer|protocol|sink", ln):
-                    out("    " + ln.strip())
+        # ------------------------------------------------------------------ 1. deploy
+        PHASE["name"] = "deploy"
+        pad = os.environ.get("E2E_PAD")
+        with Step("1. Deploy CIRC-TEST (script/Deploy.s.sol:DeployTest)", [deployer], []):
+            if pad:
+                out(f"  reusing E2E_PAD {pad}")
+            else:
+                env = dict(os.environ, PRIVATE_KEY=deployer.key, CIRC_PROTOCOL=protocol, CIRC_SINK=sink)
+                p = subprocess.run(["forge", "script", "script/Deploy.s.sol:DeployTest", "--rpc-url", RPC, "--broadcast",
+                                    "--slow", "-vv"], cwd=ROOT, capture_output=True, text=True, env=env)
+                text = p.stdout + p.stderr
+                if p.returncode != 0:
+                    raise Abort("forge script DeployTest failed:\n" + text[-1500:])
+                m = re.findall(r"CurvePad +(0x[0-9a-fA-F]{40})", text)
+                pad = m[-1]
+                bj = os.path.join(ROOT, "broadcast", "Deploy.s.sol", str(chain), "run-latest.json")
+                b = json.load(open(bj))
+                for rc in b["receipts"]:
+                    h = rc["transactionHash"]
+                    fee = int(rc["gasUsed"], 0) * int(rc.get("effectiveGasPrice", "0x0"), 0)
+                    GAS["deploy"] = GAS.get("deploy", 0) + fee
+                    out(f"  - tx `{h}` (deploy, gas {int(rc['gasUsed'], 0):,})" + ("  _(anvil fork)_" if FORK else ""))
+                    out(f"    {EXPLORER}{h}")
+                for ln in text.splitlines():
+                    if re.search(r"TEST_|LABEL|PositionLocker|CurvePad|CircHook|Graduator|TokenDeployer|protocol|sink", ln):
+                        out("    " + ln.strip())
+            locker = call(pad, "locker()(address)")[0]
+            hook = call(pad, "hook()(address)")[0]
+            graduator = call(pad, "graduator()(address)")[0]
+            vq0 = int(call(pad, "quoteConfig(address)((uint128,uint128,uint128,uint128))", WOKB)[0].strip("("). rstrip(","))
+            check("deploy", int(hook, 16) & 0x3FFF == 0x2800 and not hook.lower().startswith("0x91"),
+                  f"CircHook {hook} has exactly beforeInitialize|beforeAddLiquidity flags")
+            check("deploy", call(locker, "pad()(address)")[0].lower() == pad.lower(), f"PositionLocker {locker} is bound to CurvePad {pad}")
+            check("deploy", call(pad, "protocol()(address)")[0].lower() == protocol.lower()
+                  and call(pad, "sink()(address)")[0].lower() == sink.lower(), "protocol and sink are your addresses")
+            raise_wei = vq0 * 805950034987136158382022685 // (1061538461538461538461538462 - 805950034987136158382022685)
+            check("deploy", raise_wei <= 2 * 10**17, f"TEST WOKB vQuote0 {vq0} -> raise {okb(raise_wei)} WOKB (tiny TEST curve)")
+
+        toks = [("WOKB", WOKB)]
+
+        # ------------------------------------------------------------------ 2. launch
+        PHASE["name"] = "e2e"
+        with Step(f"2. Launch CIRC-TEST from Nandout #{circuit_id}", [holder], toks):
+            r = send(holder, pad, "createLaunch(address,uint256,string,string,address,uint256,uint256)", NANDOUT,
+                     circuit_id, "CIRC-TEST", "CIRCTEST", WOKB, 0, 0, label="createLaunch")
+            t_launch = topic("LaunchCreated(address,address,address,uint256,address,address)")
+            lg = next(tx_logs(r, pad, t_launch))
+            token = addr_of_topic(lg["topics"][1])
+            c = curve(pad, token)
+            container = c["container"]
+            out(f"  - token **{token}**, Container {container}, launch block {c['launchBlock']}")
+            check("launch", c["status"] == 0 and c["quote"].lower() == WOKB.lower(), "curve is Trading, quoted in WOKB")
+            check("launch", erc20(token, pad) == 10**27, "pad holds the full 1,000,000,000 supply")
+        toks = [("WOKB", WOKB), ("CIRCTEST", token)]
+        key = pool_key(token, hook)
+
+        fees = []  # per-trade curve fees (WOKB) from Trade events, for the split check
+
+        def record_fee(r):
+            t_trade = topic("Trade(address,address,bool,uint256,uint256,uint256,uint256,uint256)")
+            for lg in tx_logs(r, pad, t_trade):
+                fees.append(words(lg["data"])[3])
+
+        # ------------------------------------------------------------------ 3. anti-snipe
+        with Step("3. Anti-snipe: buy inside the 30-block guard is capped at 0.5% of supply", [buyer], toks) as st:
+            cap = call_int(pad, "MAX_EARLY_BUY()(uint256)")
+            now = block_number()
+            guard_end = c["launchBlock"] + 30
+            if now + 2 >= guard_end:
+                RESULTS.append(("anti-snipe", "SKIPPED", "guard window passed before the buy could land"))
+                out("- **SKIPPED** guard window already over (covered by unit tests)")
+            else:
+                v = 10**15  # 0.001 OKB buys far more than 5M tokens at the TEST price; the cap trims it, excess refunded
+                r = send(buyer, pad, "buyWithOKB(address,uint256,uint256)", token, 0, deadline(),
+                         value=v, label="buyWithOKB inside guard")
+                record_fee(r)
+                got = st.d(buyer, "CIRCTEST")
+                blk = int(r["blockNumber"], 0)
+                check("anti-snipe", blk < guard_end, f"buy landed in block {blk}, inside the guard (ends {guard_end})")
+                check("anti-snipe", got == cap, f"tokens received {tok(got)} == cap {tok(cap)} (0.5% of supply)")
+                eb = call(pad, "earlyBlock(address)(uint64,uint192)", token)
+                check("anti-snipe", int(eb[1]) == cap, "curve-wide per-block counter recorded the capped amount")
+                spent_net = -st.d(buyer, "OKB")
+                check("anti-snipe", spent_net < v, f"excess refunded: net OKB out {okb(spent_net)} < sent {okb(v)} (incl. gas)")
+
+        # ------------------------------------------------------------------ 4. buys / sells after the guard
+        wait_blocks_until(c["launchBlock"] + 31)
+        with Step("4a. Buy 0.01 OKB after the guard", [buyer], toks) as st:
+            v = 10**16
+            exp_out, _ = (int(x) for x in call(pad, "previewBuy(address,uint256)(uint256,uint256)", token, v))
+            r = send(buyer, pad, "buyWithOKB(address,uint256,uint256)", token, exp_out * 99 // 100,
+                     deadline(), value=v, label="buyWithOKB 0.01")
+            record_fee(r)
+            check("buy", st.d(buyer, "CIRCTEST") == exp_out, f"received {tok(exp_out)} CIRCTEST == previewBuy")
+        with Step("4b. Sell half the buyer's tokens back to the curve", [buyer], toks) as st:
+            bal = erc20(token, buyer.addr)
+            amt = bal // 2
+            exp_q = call_int(pad, "previewSell(address,uint256)(uint256)", token, amt)
+            send(buyer, token, "approve(address,uint256)", pad, amt, label="approve pad")
+            r = send(buyer, pad, "sell(address,uint256,uint256,uint256)", token, amt, exp_q * 99 // 100,
+                     deadline(), label="sell")
+            record_fee(r)
+            check("sell", st.d(buyer, "WOKB") == exp_q, f"received {okb(exp_q)} WOKB == previewSell")
+            check("sell", st.d(buyer, "CIRCTEST") == -amt, f"sent {tok(amt)} CIRCTEST")
+
+        # ------------------------------------------------------------------ 5. fill
+        with Step("5. Fill the curve -> Complete", [buyer], toks):
+            _, need = (int(x) for x in call(pad, "previewBuy(address,uint256)(uint256,uint256)", token, MAX_U128))
+            out(f"  - quote needed to complete: {okb(need)} WOKB")
+            r = send(buyer, pad, "buyWithOKB(address,uint256,uint256)", token, 0,
+                     deadline(), value=need + 10**12, label="buyWithOKB fill")
+            record_fee(r)
+            c = curve(pad, token)
+            t_done = topic("CurveCompleted(address)")
+            check("fill", c["status"] == 1 and any(True for _ in tx_logs(r, pad, t_done)),
+                  "curve status Complete, CurveCompleted emitted")
+            check("fill", c["tokensLeft"] == 0, "curve supply sold out")
+            err = call_reverts(pad, "buyWithOKB(address,uint256,uint256)", token, 0, 2**40, frm=buyer.addr, value=10**12)
+            check("fill", reverted_with(err, "CurveClosed()"), "further curve buys revert CurveClosed")
+
+        with Step("5b. Curve fee split 50/30/20 (CurvePad FeeVault)", [], []):
+            total = call_int(pad, "totalAccrued(address)(uint256)", WOKB)
+            acc = {k: accrued(pad, WOKB, a) for k, a in (("container", container), ("protocol", protocol), ("sink", sink))}
+            all_fees = fees
+            check("split", total == sum(fees), f"FeeVault total {okb(total)} WOKB == sum of {len(fees)} Trade-event fees")
+            exp = [0, 0, 0]
+            for f in all_fees:
+                e = split_expect(f)
+                exp = [exp[i] + e[i] for i in range(3)]
+            out(f"  - fees: {', '.join(okb(f) for f in all_fees)} WOKB (total {okb(total)})")
+            check("split", acc["container"] == exp[0], f"Container {okb(acc['container'])} = 50%")
+            check("split", acc["protocol"] == exp[1], f"protocol {okb(acc['protocol'])} = 30% (+rounding)")
+            check("split", acc["sink"] == exp[2], f"sink {okb(acc['sink'])} = 20%")
+            check("split", sum(acc.values()) == total, "shares sum to the total fee")
+
+        # ------------------------------------------------------------------ 6. graduate
+        with Step("6. Keeper graduates (permissionless)", [keeper], toks):
+            pre_proto = accrued(pad, WOKB, protocol)
+            r = send(keeper, pad, "graduate(address)", token, label="graduate")
+            t_grad = topic("Graduated(address,bytes32,uint256,uint256,uint256)")
+            lg = next(tx_logs(r, pad, t_grad))
+            pool_id = lg["topics"][2]
+            position_id, raised, lp_used = words(lg["data"])
+            out(f"  - poolId {pool_id}, position #{position_id}, quote in LP {okb(raised)} WOKB, tokens in LP {tok(lp_used)}")
+            check("graduate", curve(pad, token)["status"] == 2, "curve status Graduated")
+            check("graduate", call(POSM, "ownerOf(uint256)(address)", position_id)[0].lower() == locker.lower(),
+                  "position NFT owned by PositionLocker")
+            check("graduate", call(locker, "containerOf(uint256)(address)", position_id)[0].lower() == container.lower(),
+                  "locker records the launch's Container")
+            check("graduate", call(hook, "isOpen(bytes32)(bool)", pool_id)[0] == "true", "hook reports the pool open")
+            check("graduate", erc20(WOKB, graduator) == 0 and erc20(token, graduator) == 0, "Graduator holds nothing")
+            cc = curve(pad, token)
+            sqrtp = int(call(STATE_VIEW, "getSlot0(bytes32)(uint160,int24,uint24,uint24)", pool_id)[0])
+            tok_is0 = int(token, 16) < int(WOKB, 16)
+            exp_x192 = (cc["vQuote"] << 192) // cc["vToken"] if tok_is0 else (cc["vToken"] << 192) // cc["vQuote"]
+            got = sqrtp * sqrtp
+            check("graduate", abs(got - exp_x192) * 1000 <= exp_x192, "pool opened at the curve's final price (within 0.1%)")
+            liq = int(call(POSM, "getPositionLiquidity(uint256)(uint128)", position_id)[0])
+            check("graduate", int(call(STATE_VIEW, "getLiquidity(bytes32)(uint128)", pool_id)[0]) == liq,
+                  f"pool liquidity == locked position liquidity ({liq:,})")
+            out(f"  - graduation dust booked to protocol: {okb(accrued(pad, WOKB, protocol) - pre_proto)} WOKB")
+            err = call_reverts(pad, "graduate(address)", token, frm=keeper.addr)
+            check("graduate", reverted_with(err, "AlreadyGraduated()"), "second graduate reverts AlreadyGraduated")
+
+        # ------------------------------------------------------------------ 7. Universal Router swaps
+        with Step("7a. Universal Router 2.1.2: buy with WOKB", [buyer], toks) as st:
+            amt = min(2 * 10**15, erc20(WOKB, buyer.addr))
+            r, q, mn = ur_swap(buyer, key, WOKB, token, amt)
+            check("UR buy", st.d(buyer, "WOKB") == -amt and st.d(buyer, "CIRCTEST") >= mn,
+                  f"paid {okb(amt)} WOKB, got {tok(st.d(buyer, 'CIRCTEST'))} CIRCTEST (quoted {tok(q)})")
+    elif RESUME == "7b":
+        PHASE["name"] = "e2e"
+        pad, token, position_id = os.environ["E2E_PAD"], os.environ["E2E_TOKEN"], int(os.environ["E2E_POSITION_ID"])
         locker = call(pad, "locker()(address)")[0]
         hook = call(pad, "hook()(address)")[0]
         graduator = call(pad, "graduator()(address)")[0]
-        vq0 = int(call(pad, "quoteConfig(address)((uint128,uint128,uint128,uint128))", WOKB)[0].strip("("). rstrip(","))
-        check("deploy", int(hook, 16) & 0x3FFF == 0x2800 and not hook.lower().startswith("0x91"),
-              f"CircHook {hook} has exactly beforeInitialize|beforeAddLiquidity flags")
-        check("deploy", call(locker, "pad()(address)")[0].lower() == pad.lower(), f"PositionLocker {locker} is bound to CurvePad {pad}")
-        check("deploy", call(pad, "protocol()(address)")[0].lower() == protocol.lower()
-              and call(pad, "sink()(address)")[0].lower() == sink.lower(), "protocol and sink are your addresses")
-        raise_wei = vq0 * 805950034987136158382022685 // (1061538461538461538461538462 - 805950034987136158382022685)
-        check("deploy", raise_wei <= 2 * 10**17, f"TEST WOKB vQuote0 {vq0} -> raise {okb(raise_wei)} WOKB (tiny TEST curve)")
-
-    toks = [("WOKB", WOKB)]
-
-    # ------------------------------------------------------------------ 2. launch
-    PHASE["name"] = "e2e"
-    with Step(f"2. Launch CIRC-TEST from Nandout #{circuit_id}", [holder], toks):
-        r = send(holder, pad, "createLaunch(address,uint256,string,string,address,uint256,uint256)", NANDOUT,
-                 circuit_id, "CIRC-TEST", "CIRCTEST", WOKB, 0, 0, label="createLaunch")
-        t_launch = topic("LaunchCreated(address,address,address,uint256,address,address)")
-        lg = next(tx_logs(r, pad, t_launch))
-        token = addr_of_topic(lg["topics"][1])
-        c = curve(pad, token)
-        container = c["container"]
-        out(f"  - token **{token}**, Container {container}, launch block {c['launchBlock']}")
-        check("launch", c["status"] == 0 and c["quote"].lower() == WOKB.lower(), "curve is Trading, quoted in WOKB")
-        check("launch", erc20(token, pad) == 10**27, "pad holds the full 1,000,000,000 supply")
-    toks = [("WOKB", WOKB), ("CIRCTEST", token)]
-    key = pool_key(token, hook)
-
-    fees = []  # per-trade curve fees (WOKB) from Trade events, for the split check
-
-    def record_fee(r):
-        t_trade = topic("Trade(address,address,bool,uint256,uint256,uint256,uint256,uint256)")
-        for lg in tx_logs(r, pad, t_trade):
-            fees.append(words(lg["data"])[3])
-
-    # ------------------------------------------------------------------ 3. anti-snipe
-    with Step("3. Anti-snipe: buy inside the 30-block guard is capped at 0.5% of supply", [buyer], toks) as st:
-        cap = call_int(pad, "MAX_EARLY_BUY()(uint256)")
-        now = block_number()
-        guard_end = c["launchBlock"] + 30
-        if now + 2 >= guard_end:
-            RESULTS.append(("anti-snipe", "SKIPPED", "guard window passed before the buy could land"))
-            out("- **SKIPPED** guard window already over (covered by unit tests)")
-        else:
-            v = 10**15  # 0.001 OKB buys far more than 5M tokens at the TEST price; the cap trims it, excess refunded
-            r = send(buyer, pad, "buyWithOKB(address,uint256,uint256)", token, 0, deadline(),
-                     value=v, label="buyWithOKB inside guard")
-            record_fee(r)
-            got = st.d(buyer, "CIRCTEST")
-            blk = int(r["blockNumber"], 0)
-            check("anti-snipe", blk < guard_end, f"buy landed in block {blk}, inside the guard (ends {guard_end})")
-            check("anti-snipe", got == cap, f"tokens received {tok(got)} == cap {tok(cap)} (0.5% of supply)")
-            eb = call(pad, "earlyBlock(address)(uint64,uint192)", token)
-            check("anti-snipe", int(eb[1]) == cap, "curve-wide per-block counter recorded the capped amount")
-            spent_net = -st.d(buyer, "OKB")
-            check("anti-snipe", spent_net < v, f"excess refunded: net OKB out {okb(spent_net)} < sent {okb(v)} (incl. gas)")
-
-    # ------------------------------------------------------------------ 4. buys / sells after the guard
-    wait_blocks_until(c["launchBlock"] + 31)
-    with Step("4a. Buy 0.01 OKB after the guard", [buyer], toks) as st:
-        v = 10**16
-        exp_out, _ = (int(x) for x in call(pad, "previewBuy(address,uint256)(uint256,uint256)", token, v))
-        r = send(buyer, pad, "buyWithOKB(address,uint256,uint256)", token, exp_out * 99 // 100,
-                 deadline(), value=v, label="buyWithOKB 0.01")
-        record_fee(r)
-        check("buy", st.d(buyer, "CIRCTEST") == exp_out, f"received {tok(exp_out)} CIRCTEST == previewBuy")
-    with Step("4b. Sell half the buyer's tokens back to the curve", [buyer], toks) as st:
-        bal = erc20(token, buyer.addr)
-        amt = bal // 2
-        exp_q = call_int(pad, "previewSell(address,uint256)(uint256)", token, amt)
-        send(buyer, token, "approve(address,uint256)", pad, amt, label="approve pad")
-        r = send(buyer, pad, "sell(address,uint256,uint256,uint256)", token, amt, exp_q * 99 // 100,
-                 deadline(), label="sell")
-        record_fee(r)
-        check("sell", st.d(buyer, "WOKB") == exp_q, f"received {okb(exp_q)} WOKB == previewSell")
-        check("sell", st.d(buyer, "CIRCTEST") == -amt, f"sent {tok(amt)} CIRCTEST")
-
-    # ------------------------------------------------------------------ 5. fill
-    with Step("5. Fill the curve -> Complete", [buyer], toks):
-        _, need = (int(x) for x in call(pad, "previewBuy(address,uint256)(uint256,uint256)", token, MAX_U128))
-        out(f"  - quote needed to complete: {okb(need)} WOKB")
-        r = send(buyer, pad, "buyWithOKB(address,uint256,uint256)", token, 0,
-                 deadline(), value=need + 10**12, label="buyWithOKB fill")
-        record_fee(r)
-        c = curve(pad, token)
-        t_done = topic("CurveCompleted(address)")
-        check("fill", c["status"] == 1 and any(True for _ in tx_logs(r, pad, t_done)),
-              "curve status Complete, CurveCompleted emitted")
-        check("fill", c["tokensLeft"] == 0, "curve supply sold out")
-        err = call_reverts(pad, "buyWithOKB(address,uint256,uint256)", token, 0, 2**40, frm=buyer.addr, value=10**12)
-        check("fill", reverted_with(err, "CurveClosed()"), "further curve buys revert CurveClosed")
-
-    with Step("5b. Curve fee split 50/30/20 (CurvePad FeeVault)", [], []):
-        total = call_int(pad, "totalAccrued(address)(uint256)", WOKB)
-        acc = {k: accrued(pad, WOKB, a) for k, a in (("container", container), ("protocol", protocol), ("sink", sink))}
-        all_fees = fees
-        check("split", total == sum(fees), f"FeeVault total {okb(total)} WOKB == sum of {len(fees)} Trade-event fees")
-        exp = [0, 0, 0]
-        for f in all_fees:
-            e = split_expect(f)
-            exp = [exp[i] + e[i] for i in range(3)]
-        out(f"  - fees: {', '.join(okb(f) for f in all_fees)} WOKB (total {okb(total)})")
-        check("split", acc["container"] == exp[0], f"Container {okb(acc['container'])} = 50%")
-        check("split", acc["protocol"] == exp[1], f"protocol {okb(acc['protocol'])} = 30% (+rounding)")
-        check("split", acc["sink"] == exp[2], f"sink {okb(acc['sink'])} = 20%")
-        check("split", sum(acc.values()) == total, "shares sum to the total fee")
-
-    # ------------------------------------------------------------------ 6. graduate
-    with Step("6. Keeper graduates (permissionless)", [keeper], toks):
-        pre_proto = accrued(pad, WOKB, protocol)
-        r = send(keeper, pad, "graduate(address)", token, label="graduate")
-        t_grad = topic("Graduated(address,bytes32,uint256,uint256,uint256)")
-        lg = next(tx_logs(r, pad, t_grad))
-        pool_id = lg["topics"][2]
-        position_id, raised, lp_used = words(lg["data"])
-        out(f"  - poolId {pool_id}, position #{position_id}, quote in LP {okb(raised)} WOKB, tokens in LP {tok(lp_used)}")
-        check("graduate", curve(pad, token)["status"] == 2, "curve status Graduated")
-        check("graduate", call(POSM, "ownerOf(uint256)(address)", position_id)[0].lower() == locker.lower(),
-              "position NFT owned by PositionLocker")
-        check("graduate", call(locker, "containerOf(uint256)(address)", position_id)[0].lower() == container.lower(),
-              "locker records the launch's Container")
-        check("graduate", call(hook, "isOpen(bytes32)(bool)", pool_id)[0] == "true", "hook reports the pool open")
-        check("graduate", erc20(WOKB, graduator) == 0 and erc20(token, graduator) == 0, "Graduator holds nothing")
-        cc = curve(pad, token)
-        sqrtp = int(call(STATE_VIEW, "getSlot0(bytes32)(uint160,int24,uint24,uint24)", pool_id)[0])
-        tok_is0 = int(token, 16) < int(WOKB, 16)
-        exp_x192 = (cc["vQuote"] << 192) // cc["vToken"] if tok_is0 else (cc["vToken"] << 192) // cc["vQuote"]
-        got = sqrtp * sqrtp
-        check("graduate", abs(got - exp_x192) * 1000 <= exp_x192, "pool opened at the curve's final price (within 0.1%)")
+        container = curve(pad, token)["container"]
+        check("resume", curve(pad, token)["status"] == 2, f"CIRC-TEST token {token} is Graduated on pad {pad}")
+        check("resume", call(POSM, "ownerOf(uint256)(address)", position_id)[0].lower() == locker.lower(),
+              f"position #{position_id} is locked")
+        toks = [("WOKB", WOKB), ("CIRCTEST", token)]
+        key = pool_key(token, hook)
+        pool_id = cast("keccak", enc("f((address,address,uint24,int24,address))", key[2]))
         liq = int(call(POSM, "getPositionLiquidity(uint256)(uint128)", position_id)[0])
-        check("graduate", int(call(STATE_VIEW, "getLiquidity(bytes32)(uint128)", pool_id)[0]) == liq,
-              f"pool liquidity == locked position liquidity ({liq:,})")
-        out(f"  - graduation dust booked to protocol: {okb(accrued(pad, WOKB, protocol) - pre_proto)} WOKB")
-        err = call_reverts(pad, "graduate(address)", token, frm=keeper.addr)
-        check("graduate", reverted_with(err, "AlreadyGraduated()"), "second graduate reverts AlreadyGraduated")
-
-    # ------------------------------------------------------------------ 7. Universal Router swaps
-    with Step("7a. Universal Router 2.1.2: buy with WOKB", [buyer], toks) as st:
-        amt = min(2 * 10**15, erc20(WOKB, buyer.addr))
-        r, q, mn = ur_swap(buyer, key, WOKB, token, amt)
-        check("UR buy", st.d(buyer, "WOKB") == -amt and st.d(buyer, "CIRCTEST") >= mn,
-              f"paid {okb(amt)} WOKB, got {tok(st.d(buyer, 'CIRCTEST'))} CIRCTEST (quoted {tok(q)})")
+        # msg.value already spent in the stopped run counts against the cap
+        SPENT["value"] = sum(int(Decimal(m) * E18) for m in re.findall(r"value ([0-9.]+) OKB, gas", "\n".join(_log_lines)))
+        out(f"- msg.value already spent before the stop: {okb(SPENT['value'])} OKB (counted against the 0.5 cap)")
+    else:
+        raise Abort(f"unsupported E2E_RESUME_FROM={RESUME}")
     with Step("7b. Universal Router 2.1.2: sell 10% of the buyer's tokens", [buyer], toks) as st:
         amt = erc20(token, buyer.addr) // 10
         r, q, mn = ur_swap(buyer, key, token, WOKB, amt)
@@ -692,12 +742,22 @@ def main():
     out(f"- CurvePad (CIRC-TEST): `{pad}`; PositionLocker `{locker}`; CircHook `{hook}`; Graduator `{graduator}`")
     out(f"- token `{token}`; pool `{pool_id}`; locked position #{position_id}")
     out(f"- msg.value spent (cap 0.5 OKB): {okb(SPENT['value'])} OKB")
-    for ph, w in GAS.items():
-        out(f"- gas, {ph}: {okb(w)} OKB")
-    out(f"- prod deploy estimate: ~{okb(GAS.get('deploy', 8_600_000 * gas_price()))} OKB gas (same contracts)")
-    passed = sum(1 for r in RESULTS if r[1] == "PASS")
-    out(f"- checks: {passed} PASS, {sum(1 for r in RESULTS if r[1] == 'FAIL')} FAIL, "
-        f"{sum(1 for r in RESULTS if r[1] == 'SKIPPED')} SKIPPED")
+    # Gas actually paid, from every receipt in the log (covers resumed runs); phase by step heading.
+    gas, phase = {}, "e2e"
+    for ln in list(_log_lines):
+        if ln.startswith("### "):
+            phase = "deploy" if ln.startswith("### 1.") else "cleanup" if ln.startswith("### 12.") else "e2e"
+        m = re.match(r"\s+- tx `(0x[0-9a-f]{64})`", ln)
+        if m:
+            rc = json.loads(cast("receipt", m.group(1), "--json", "--rpc-url", RPC))
+            fee = int(rc["gasUsed"], 0) * int(rc.get("effectiveGasPrice", "0x0"), 0)
+            gas[phase] = gas.get(phase, 0) + fee
+    for ph, w in gas.items():
+        out(f"- gas paid, {ph}: {okb(w)} OKB")
+    out(f"- gas paid, total: {okb(sum(gas.values()))} OKB")
+    out(f"- prod deploy estimate: ~{okb(gas.get('deploy', 8_600_000 * gas_price()))} OKB gas (same contracts)")
+    text = "\n".join(_log_lines)
+    out(f"- checks: {text.count('**PASS**')} PASS, {text.count('**FAIL**')} FAIL, {text.count('**SKIPPED**')} SKIPPED")
     out()
     out("E2E RESULT: PASS")
 
