@@ -88,7 +88,12 @@ def check(step, cond, detail):
 
 # ------------------------------------------------------------------------------------------------------------- cast
 
+def _arg(x):
+    return str(x).lower() if isinstance(x, bool) else str(x)
+
+
 def _run(args, env=None):
+    args = [_arg(a) for a in args]
     p = subprocess.run(["cast", *args], capture_output=True, text=True, env=env)
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
@@ -101,7 +106,7 @@ def cast(*args):
 
 
 def call(to, sig, *args, frm=None, value=0):
-    a = ["call", to, sig, *[str(x) for x in args], "--rpc-url", RPC]
+    a = ["call", to, sig, *[_arg(x) for x in args], "--rpc-url", RPC]
     if frm:
         a += ["--from", frm]
     if value:
@@ -115,7 +120,7 @@ def call_int(to, sig, *args, **kw):
 
 def call_reverts(to, sig, *args, frm=None, value=0):
     """Returns the revert data/text if the call reverts, else None."""
-    a = ["call", to, sig, *[str(x) for x in args], "--rpc-url", RPC]
+    a = ["call", to, sig, *[_arg(x) for x in args], "--rpc-url", RPC]
     if frm:
         a += ["--from", frm]
     if value:
@@ -138,7 +143,7 @@ def sel(signature):
 
 
 def enc(sig, *args):
-    return cast("abi-encode", sig, *[str(x) for x in args])
+    return cast("abi-encode", sig, *[_arg(x) for x in args])
 
 
 def native(addr):
@@ -187,7 +192,7 @@ def send(w, to, sig, *args, value=0, sweep=False, label=""):
             raise Abort(f"spend cap: {label} would bring msg.value total to {okb(SPENT['value'] + value)} OKB > 0.5")
     a = ["send", to]
     if sig:
-        a += [sig, *[str(x) for x in args]]
+        a += [sig, *[_arg(x) for x in args]]
     a += ["--rpc-url", RPC, "--json", *w.signer_args()]
     if value:
         a += ["--value", str(value)]

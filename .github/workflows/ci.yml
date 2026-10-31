@@ -63,7 +63,7 @@ jobs:
           PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
           CIRC_PROTOCOL: "0x000000000000000000000000000000000000dEaD"
           CIRC_SINK: "0x000000000000000000000000000000000000bEEF"
-        run: forge script script/Deploy.s.sol --fork-url "$XLAYER_RPC_URL" -vvv
+        run: forge script script/Deploy.s.sol:Deploy --fork-url "$XLAYER_RPC_URL" -vvv
 
   gate2:
     name: GATE 2 dry run (anvil fork of X Layer mainnet)
@@ -93,7 +93,7 @@ jobs:
           echo "deployer $(cast wallet address $DK)"; echo "buyer $(cast wallet address $BK)"
       - name: 1) Dry run - live curve constants for approval
         run: |
-          forge script script/Deploy.s.sol --rpc-url $ANVIL -vv | tee dry.txt
+          forge script script/Deploy.s.sol:Deploy --rpc-url $ANVIL -vv | tee dry.txt
           W=$(grep -oE 'LIVE_WOKB_VQUOTE0 [0-9]+' dry.txt | tail -1 | awk '{print $2}')
           B=$(grep -oE 'LIVE_BEM_VQUOTE0 [0-9]+' dry.txt | tail -1 | awk '{print $2}')
           test -n "$W" && test -n "$B"
@@ -101,7 +101,7 @@ jobs:
           echo "APPROVED_WOKB_VQUOTE0=$W" >> $GITHUB_ENV; echo "APPROVED_BEM_VQUOTE0=$B" >> $GITHUB_ENV
       - name: 2) Deploy (broadcast to the anvil fork)
         run: |
-          forge script script/Deploy.s.sol --rpc-url $ANVIL --broadcast -vv | tee deploy.txt
+          forge script script/Deploy.s.sol:Deploy --rpc-url $ANVIL --broadcast -vv | tee deploy.txt
           PAD=$(grep -oE 'CurvePad +0x[0-9a-fA-F]{40}' deploy.txt | tail -1 | awk '{print $2}')
           test -n "$PAD"; echo "CIRC_PAD=$PAD" >> $GITHUB_ENV
       - name: 3) Launch as the Nandout holder
