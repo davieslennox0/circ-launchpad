@@ -12,6 +12,11 @@ import {CurveConstants} from "./CurveConstants.sol";
 import {HookMiner} from "./HookMiner.sol";
 import {LivePrices} from "./LivePrices.sol";
 
+interface ISafeView {
+    function getThreshold() external view returns (uint256);
+    function getOwners() external view returns (address[] memory);
+}
+
 /// @notice Shared X Layer wiring for the deploy script and fork tests.
 library CircDeploy {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
@@ -104,6 +109,7 @@ contract Deploy is DeployGuards {
     uint256 internal constant MAX_DRIFT_BPS = 200; // 2%
 
     error ApprovalRequired();
+    error RecipientNotAContract(string name, address account);
     error PricesMovedSinceApproval(string quote, uint256 approved, uint256 live);
 
     function run() external returns (CurvePad pad, PositionLocker locker) {
@@ -116,6 +122,8 @@ contract Deploy is DeployGuards {
         address sink = vm.envAddress("CIRC_SINK");
 
         (uint128 wokbVQ0, uint128 bemVQ0) = _constants(broadcasting);
+        _requireSafe("CIRC_PROTOCOL", protocol);
+        _requireSafe("CIRC_SINK", sink);
 
         vm.startBroadcast(pk);
         (pad, locker) = CircDeploy.deployWith(
@@ -151,6 +159,20 @@ contract Deploy is DeployGuards {
         _checkDrift("BEM", approvedB, liveB);
         console2.log("Using APPROVED constants:", approvedW, approvedB);
         return (uint128(approvedW), uint128(approvedB));
+    }
+
+    /// @dev Production fee recipients must be contracts (the owner's Safes), never EOAs. Prints Safe threshold/owners when
+    /// the account answers the Safe interface.
+    function _requireSafe(string memory name, address account) internal view {
+        console2.log(name, account);
+        console2.log("  code size", account.code.length);
+        if (account.code.length == 0) revert RecipientNotAContract(name, account);
+        try ISafeView(account).getThreshold() returns (uint256 t) {
+            address[] memory owners = ISafeView(account).getOwners();
+            console2.log("  Safe threshold %s of %s owners", t, owners.length);
+        } catch {
+            console2.log("  (does not answer the Safe interface)");
+        }
     }
 
     function _checkDrift(string memory quote, uint256 approved, uint256 live) internal pure {
