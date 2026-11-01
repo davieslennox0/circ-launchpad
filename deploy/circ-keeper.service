@@ -1,13 +1,17 @@
 [Unit]
-Description=Circ Launchpad keeper (graduates Complete curves on the prod CurvePad)
+Description=Circ Launchpad keeper (graduates Complete curves on the production CurvePad)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/circ-keeper.env
-Environment=PATH=/root/.foundry/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/python3 -I -u /root/circ/script/keeper/keeper.py
+User=circ
+Group=circ
+EnvironmentFile=/etc/circ/keeper.env
+Environment=PATH=/opt/circ/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/circ-keeper
+Environment=FOUNDRY_DISABLE_NIGHTLY_WARNING=1
+ExecStart=/usr/bin/python3 -I -u /opt/circ/keeper.py
 Restart=always
 RestartSec=10
 StateDirectory=circ-keeper
@@ -16,6 +20,18 @@ StandardError=append:/var/log/circ-keeper.log
 MemoryHigh=96M
 MemoryMax=128M
 Nice=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target

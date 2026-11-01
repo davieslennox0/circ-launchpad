@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Circ keeper: graduates every Complete curve on a CurvePad. Permissionless and idempotent.
 
-Watches CurveCompleted(token) logs, confirms the curve is still Complete, and sends graduate(token) from KEEPER_KEY.
+Watches CurveCompleted(token) logs, confirms the curve is still Complete, and sends graduate(token).
 A failed or reverted attempt is retried on the next pass; graduate() leaves the curve unchanged when it reverts.
 
-Reads use plain JSON-RPC (stdlib only, ~15 MB RSS). Only sends go through `cast`, so the key never touches this
-process's logs. Env (from an EnvironmentFile, never printed):
-  KEEPER_KEY      keeper private key
-  CIRC_PAD        CurvePad address
-  START_BLOCK     first block to scan (the pad's deploy block)
-  RPC_URL         default https://rpc.xlayer.tech
-  STATE_FILE      default /var/lib/circ-keeper/state.json
-  POLL_SECONDS    default 5
-  MIN_BALANCE_WEI warn below this keeper balance (default 0.002 OKB)
+Reads use plain JSON-RPC (stdlib only, ~15 MB RSS). Only sends go through `cast`. Env (from an EnvironmentFile):
+  KEEPER_KEYSTORE      encrypted keystore file (the key is never on a command line, where `ps` could show it)
+  KEEPER_PASSWORD_FILE file holding the keystore password
+  CIRC_PAD             CurvePad address
+  START_BLOCK          first block to scan (the pad's deploy block)
+  RPC_URL              default https://rpc.xlayer.tech
+  STATE_FILE           default /var/lib/circ-keeper/state.json
+  POLL_SECONDS         default 5
+  MIN_BALANCE_WEI      warn below this keeper balance (default 0.002 OKB)
 """
 import json
 import os
@@ -22,20 +22,23 @@ import time
 import urllib.request
 
 RPC = os.environ.get("RPC_URL", "https://rpc.xlayer.tech")
-PAD = os.environ["CIRC_PAD"].lower()
-KEY = os.environ["KEEPER_KEY"]
+PAD = os.environ.get("CIRC_PAD", "").lower()
 STATE_FILE = os.environ.get("STATE_FILE", "/var/lib/circ-keeper/state.json")
 POLL = int(os.environ.get("POLL_SECONDS", "5"))
 MIN_BAL = int(os.environ.get("MIN_BALANCE_WEI", str(2 * 10**15)))
 CHUNK = 100  # X Layer public RPC caps eth_getLogs at 100 blocks
 CONFIRMATIONS = 2
 
-TOPIC_COMPLETED = "0x" + subprocess.run(["cast", "keccak", "CurveCompleted(address)"], capture_output=True,
-                                        text=True, check=True).stdout.strip()[2:]
-SEL_CURVES = "0x" + subprocess.run(["cast", "sig", "curves(address)"], capture_output=True,
-                                   text=True, check=True).stdout.strip()[2:]
-KEEPER = subprocess.run(["cast", "wallet", "address", "--private-key", KEY], capture_output=True, text=True,
-                        check=True).stdout.strip()
+TOPIC_COMPLETED = "0xa0a0c0fe2202393c1af7f6919ecd56c835ac1395aa519b430721ea8135e51acc"  # CurveCompleted(address)
+SEL_CURVES = "0x2cc3dc6e"  # curves(address)
+
+
+def signer_args():
+    return ["--keystore", os.environ["KEEPER_KEYSTORE"], "--password-file", os.environ["KEEPER_PASSWORD_FILE"]]
+
+
+def keeper_address():
+    return subprocess.run(["cast", "wallet", "address", *signer_args()], capture_output=True, text=True, check=True).stdout.strip()
 
 
 def log(msg):
@@ -83,8 +86,8 @@ def save_state(s):
 
 
 def graduate(token):
-    p = subprocess.run(["cast", "send", PAD, "graduate(address)", token, "--rpc-url", RPC, "--async",
-                        "--private-key", KEY], capture_output=True, text=True)
+    p = subprocess.run(["cast", "send", PAD, "graduate(address)", token, "--rpc-url", RPC, "--async", *signer_args()],
+                       capture_output=True, text=True)
     if p.returncode != 0:
         log(f"graduate {token}: not sent: {p.stderr.strip()[-300:]}")
         return False
@@ -104,37 +107,43 @@ def graduate(token):
     return False
 
 
+def tick(s):
+    """One pass: pick up new CurveCompleted logs, then graduate whatever is still Complete."""
+    head = int(rpc("eth_blockNumber", []), 16) - CONFIRMATIONS
+    while s["next_block"] <= head:
+        to = min(head, s["next_block"] + CHUNK - 1)
+        logs = rpc("eth_getLogs", [{"address": PAD, "topics": [TOPIC_COMPLETED],
+                                    "fromBlock": hex(s["next_block"]), "toBlock": hex(to)}])
+        for lg in logs:
+            t = "0x" + lg["topics"][1][-40:]
+            if t not in s["pending"]:
+                s["pending"].append(t)
+                log(f"CurveCompleted {t} (block {int(lg['blockNumber'], 16)})")
+        s["next_block"] = to + 1
+        save_state(s)
+    for t in list(s["pending"]):
+        st = status(t)
+        if st == 1:
+            graduate(t)
+            st = status(t)
+        if st == 2:
+            s["pending"].remove(t)
+            log(f"{t} graduated")
+            save_state(s)
+
+
 def main():
-    log(f"circ keeper up: pad {PAD}, keeper {KEEPER}, rpc {RPC}")
+    keeper = keeper_address()
+    log(f"circ keeper up: pad {PAD}, keeper {keeper}, rpc {RPC}")
     s = load_state()
     last_warn = 0
     while True:
         try:
-            head = int(rpc("eth_blockNumber", []), 16) - CONFIRMATIONS
-            while s["next_block"] <= head:
-                to = min(head, s["next_block"] + CHUNK - 1)
-                logs = rpc("eth_getLogs", [{"address": PAD, "topics": [TOPIC_COMPLETED],
-                                            "fromBlock": hex(s["next_block"]), "toBlock": hex(to)}])
-                for lg in logs:
-                    t = "0x" + lg["topics"][1][-40:]
-                    if t not in s["pending"]:
-                        s["pending"].append(t)
-                        log(f"CurveCompleted {t} (block {int(lg['blockNumber'], 16)})")
-                s["next_block"] = to + 1
-                save_state(s)
-            for t in list(s["pending"]):
-                st = status(t)
-                if st == 1:
-                    graduate(t)
-                    st = status(t)
-                if st == 2:
-                    s["pending"].remove(t)
-                    log(f"{t} graduated")
-                    save_state(s)
+            tick(s)
             if time.time() - last_warn > 3600:
-                bal = int(rpc("eth_getBalance", [KEEPER, "latest"]), 16)
+                bal = int(rpc("eth_getBalance", [keeper, "latest"]), 16)
                 if bal < MIN_BAL:
-                    log(f"WARNING keeper balance {bal / 1e18:.6f} OKB is below {MIN_BAL / 1e18:.4f}; top up {KEEPER}")
+                    log(f"WARNING keeper balance {bal / 1e18:.6f} OKB is below {MIN_BAL / 1e18:.4f}; top up {keeper}")
                 last_warn = time.time()
         except Exception as e:  # RPC hiccups: log and keep going
             log(f"loop error: {e}")

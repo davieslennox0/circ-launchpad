@@ -66,14 +66,15 @@ def block_ts(n):
 
 
 def load(name):
+    inst = INSTANCES[name]
     try:
         with open(os.path.join(OUT, f"index-{name}.json")) as f:
             s = json.load(f)
-        if s.get("pad", "").lower() == INSTANCES[name]["pad"].lower():
-            return s  # same pad: resume; a repointed instance starts fresh below
+        if s.get("pad", "").lower() == inst["pad"].lower():
+            return s  # same pad: resume
     except (OSError, ValueError):
-        inst = INSTANCES[name]
-        return {"pad": inst["pad"], "startBlock": inst["start"], "scannedTo": inst["start"] - 1, "launches": {}}
+        pass
+    return {"pad": inst["pad"], "startBlock": inst["start"], "scannedTo": inst["start"] - 1, "launches": {}}  # new or repointed
 
 
 def save(name, s):
@@ -98,10 +99,13 @@ def image_uri(data):
 
 
 def apply(s, lg):
+    """Applies one log. Idempotent: a window that failed halfway (e.g. a 429 on block_ts) is simply scanned again."""
     t0 = lg["topics"][0]
     n = int(lg["blockNumber"], 16)
     if t0 in (TOPICS["launch"], TOPICS["launch2"]):
         token = addr(lg["topics"][1])
+        if token in s["launches"]:
+            return
         w = words(lg["data"])
         s["launches"][token] = {
             "token": token, "quote": addr(lg["topics"][2]), "circuitNft": addr(lg["topics"][3]),
@@ -116,8 +120,11 @@ def apply(s, lg):
         if L is None:
             return
         if t0 == TOPICS["trade"]:
+            i = int(lg["logIndex"], 16)
+            if any(t["tx"] == lg["transactionHash"] and t.get("i") == i for t in L["trades"]):
+                return
             w = words(lg["data"])
-            L["trades"].append({"b": n, "ts": block_ts(n), "tx": lg["transactionHash"], "who": addr(lg["topics"][2]),
+            L["trades"].append({"b": n, "i": i, "ts": block_ts(n), "tx": lg["transactionHash"], "who": addr(lg["topics"][2]),
                                 "buy": w[0] == 1, "q": str(w[1]), "t": str(w[2]), "fee": str(w[3])})
             L["trades"] = L["trades"][-KEEP_TRADES:]
         elif t0 == TOPICS["graduated"]:

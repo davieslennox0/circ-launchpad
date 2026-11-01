@@ -1,13 +1,15 @@
 [Unit]
-Description=Circ public indexer (keyless; writes /srv/circ-web/data/index-*.json for pitchook.xyz)
+Description=Circ public indexer (keyless; writes /srv/circ-web/data/index-*.json for circ.getsarf.xyz)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+User=circ
+Group=circ
 Environment=OUT_DIR=/srv/circ-web/data
 Environment=RPC_URL=https://rpc.xlayer.tech
-ExecStart=/usr/bin/python3 -I -u /root/circ/web/indexer.py
+ExecStart=/usr/bin/python3 -I -u /opt/circ/indexer.py
 Restart=always
 RestartSec=10
 StandardOutput=append:/var/log/circ-indexer.log
@@ -15,6 +17,19 @@ StandardError=append:/var/log/circ-indexer.log
 MemoryHigh=48M
 MemoryMax=64M
 Nice=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/circ-web/data
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target
