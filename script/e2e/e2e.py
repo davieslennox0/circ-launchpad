@@ -398,6 +398,11 @@ def main():
         if not re.fullmatch(r"0x[0-9a-fA-F]{40}", a):
             raise Abort(f"{n} missing or malformed in .env")
     circuit_id = int(os.environ.get("E2E_CIRCUIT_ID", "0"))  # set only when resuming; otherwise minted in step 2
+    if RESUME and not circuit_id:
+        raise Abort("resuming needs E2E_CIRCUIT_ID")
+    if os.environ.get("TEST_RAISE_WEI"):
+        raise Abort("TEST_RAISE_WEI is set: the spend plan and funding assume the default test curve")
+    out(f"- sweep target MAIN_WALLET: {main_wallet}; test wallet: {buyer.addr}")
     ours = [deployer, keeper, buyer]
 
     if not RESUME or RESUME == "0":
@@ -413,7 +418,7 @@ def main():
             t_addr = call(NANDOUT, "transistors()(address)")[0]
             mint_cost = call_int(t_addr, "mintPrice()(uint256)") + call_int(t_addr, "protocolFee()(uint256)") + call_int(NANDOUT, "TAPEOUT_FEE()(uint256)")
             out(f"  - new Nand costs {okb(mint_cost)} OKB; Container open fee {okb(open_fee)} OKB; gas price {gp / 1e9:.4f} gwei")
-            # Cost estimate (gas from the anvil-fork rehearsal, script/e2e/README.md).
+            # Cost estimate (gas from the anvil-fork rehearsal).
             deploy_gas, e2e_gas = 8_600_000, 4_500_000
             out(f"  - estimate: TEST deploy {okb(deploy_gas * gp)} OKB gas; e2e run {okb(e2e_gas * gp)} OKB gas "
                 f"+ ~0.19 OKB value (fill ~0.1, Nand {okb(mint_cost)}, Container open {okb(open_fee)}, withdraw fee 0.0013); "
@@ -429,7 +434,15 @@ def main():
             if pad:
                 out(f"  reusing E2E_PAD {pad}")
             else:
-                env = dict(os.environ, PRIVATE_KEY=deployer.key, CIRC_PROTOCOL=protocol, CIRC_SINK=sink)
+                # Deploy only the CI-built artifact: a silent recompile here could produce different bytes.
+            v = subprocess.run(["forge", "--version"], capture_output=True, text=True).stdout
+            if "1.7.1" not in v:
+                raise Abort(f"forge must be 1.7.1, the version CI builds with: {v.splitlines()[0] if v else 'not found'}")
+            if not FORK:
+                b = subprocess.run(["forge", "build", "--skip", "test"], cwd=ROOT, capture_output=True, text=True)
+                if "No files changed" not in b.stdout + b.stderr:
+                    raise Abort("out/ and cache/ aren't the CI artifact for this commit; refusing to recompile and deploy different bytes")
+            env = dict(os.environ, PRIVATE_KEY=deployer.key, CIRC_PROTOCOL=protocol, CIRC_SINK=sink)
                 p = subprocess.run(["forge", "script", "script/Deploy.s.sol:DeployTest", "--rpc-url", RPC, "--broadcast",
                                     "--slow", "-vv"], cwd=ROOT, capture_output=True, text=True, env=env)
                 text = p.stdout + p.stderr
@@ -740,7 +753,10 @@ def main():
                     if "insufficient" not in str(e).lower():
                         raise
                     margin *= 10
-            out(f"  - {w.name} left with {okb(native(w.addr))} OKB")
+            left = native(w.addr)
+            out(f"  - {w.name} left with {okb(left)} OKB")
+            if left > 10**15:
+                raise Abort(f"sweep failed: {w.name} still holds {okb(left)} OKB")
 
     # ------------------------------------------------------------------ 13. locked LP report
     with Step("13. Locked LP (stays forever by design)", [], []):
@@ -785,7 +801,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Abort as e:
+    except (Abort, StopIteration) as e:
         out()
         out(f"**STOPPED: {e}**")
         out()
