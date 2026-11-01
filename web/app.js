@@ -5,7 +5,7 @@
  * signed in the user's own wallet. */
 "use strict";
 const E = ethers;
-const { esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, guardBlocksLeft, recommendDirect, parseContainerRevert,
+const { priceChange, formatChange, esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, guardBlocksLeft, recommendDirect, parseContainerRevert,
   uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength } = CircCore;
 
 const CHAIN_ID = 196;
@@ -365,6 +365,33 @@ async function connect() {
   return state.signer;
 }
 async function signer() { return state.signer || connect(); }
+function confetti() { // a token just went LIVE. Canvas only, no library; skipped for people who ask for reduced motion.
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const cv = document.createElement("canvas");
+  cv.id = "confetti";
+  cv.style.cssText = "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9999";
+  cv.width = innerWidth; cv.height = innerHeight;
+  document.body.appendChild(cv);
+  const g = cv.getContext("2d"), colors = ["#F4F6F9", "#A7AEB6", "#6B9E7D", "#C99A4E", "#C2635A"];
+  const bits = Array.from({ length: 180 }, () => ({
+    x: innerWidth / 2 + (Math.random() - .5) * innerWidth * .3, y: innerHeight * .35,
+    vx: (Math.random() - .5) * 13, vy: -Math.random() * 13 - 3, w: 5 + Math.random() * 5, h: 8 + Math.random() * 6,
+    r: Math.random() * 6, vr: (Math.random() - .5) * .35, c: colors[Math.floor(Math.random() * colors.length)],
+  }));
+  const start = performance.now();
+  (function frame(t) {
+    const age = t - start;
+    if (age > 3800) return cv.remove();
+    g.clearRect(0, 0, cv.width, cv.height);
+    g.globalAlpha = Math.min(1, (3800 - age) / 800);
+    for (const b of bits) {
+      b.vy += .24; b.vx *= .99; b.x += b.vx; b.y += b.vy; b.r += b.vr;
+      g.save(); g.translate(b.x, b.y); g.rotate(b.r); g.fillStyle = b.c; g.fillRect(-b.w / 2, -b.h / 2, b.w, b.h); g.restore();
+    }
+    requestAnimationFrame(frame);
+  })(start);
+}
+
 async function sendTx(label, fn) {
   try {
     const s = await signer(); if (!s) return;
@@ -373,6 +400,7 @@ async function sendTx(label, fn) {
     toast(`${label}: sent ${short(tx.hash)}`);
     const r = await tx.wait();
     toast(`${label}: ${r.status === 1 ? "confirmed" : "reverted"}`, 6000);
+    if (r.status === 1 && /launch/i.test(label)) confetti();
     route();
   } catch (e) {
     toast(`${label}: ${e.shortMessage || e.reason || e.message}`.slice(0, 180), 7000);
@@ -414,6 +442,8 @@ function devPill(L) {
   if (!L.dev) return `<span class="pill" title="The launching wallet isn't known yet">Dev holds –</span>`;
   return `<span class="pill ${L.dev.high ? "dev-high" : ""}" title="Share of supply in the wallet that launched this token. Tokens it moved elsewhere don't count.">Dev holds ${L.dev.pct.toFixed(L.dev.pct < 10 ? 2 : 1)}%</span>`;
 }
+const CHANGE_WINDOWS = [["5M", 300], ["30M", 1800], ["1H", 3600], ["24H", 86400]];
+const changes = (L) => CHANGE_WINDOWS.map(([label, sec]) => ({ label, ...formatChange(priceChange(L.prices, Date.now() / 1000, sec, L.price)) }));
 function pills(L) {
   return `<span class="pill ${STATUS_CLS[L.status]}">${STATUS[L.status]}</span>` +
     (isBem(L.quote) ? `<span class="pill vol" title="BEM-quoted: the graduation target is fixed in BEM, so its USD value moves with BEM's price">BEM · volatile quote</span>` : "");
@@ -437,8 +467,8 @@ async function viewFloor() {
   }
   const rows = L.map((x) => `<a class="row" href="#/t/${x.token}">
       <div class="tok">${avatar(x)}<div><b>${esc(x.name)}</b><small>$${esc(x.symbol)} · ${circuitLabel(x)}</small></div></div>
-      <div class="mono">${usd(x.mcUsd)}<div class="muted" style="font-size:12px">${num(x.mcQuote, 2)} ${x.cfg.sym}</div></div>
-      <div class="hide-m"><div class="bar"><div style="width:${x.status ? 100 : x.progress}%"></div></div><small class="mono muted">${x.status ? "100" : x.progress.toFixed(1)}%</small></div>
+      <div class="mono">${usd(x.mcUsd)}<div class="muted" style="font-size:12px">${num(x.mcQuote, 2)} ${x.cfg.sym}</div><div class="bar mini" title="Curve sold: ${x.status ? "100" : x.progress.toFixed(1)}%"><div style="width:${x.status ? 100 : x.progress}%"></div></div></div>
+      <div class="chgs">${changes(x).map((c) => `<div class="chg ${c.cls}" data-l="${c.label}">${c.text}</div>`).join("")}</div>
       <div class="status-cell">${pills(x)}${devPill(x)}</div>
       <div class="mono muted" style="font-size:12px">${x.ts ? ago(x.ts) : ""}</div></a>`).join("");
 
@@ -472,7 +502,7 @@ async function viewFloor() {
     <span><i style="background:var(--green)"></i>taped out</span><span><i style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--blue)"></i>BEM · volatile quote</span></div></div>
   <div class="wafer-wrap">
     <div class="wafer"><div class="grid">${cells.join("")}</div></div>
-    <div>${L.length ? `<div class="list"><div class="row head"><div>Token</div><div>Market cap</div><div class="hide-m">Curve</div><div>Status · Dev</div><div>Age</div></div>${rows}</div>`
+    <div>${L.length ? `<div class="list"><div class="row head"><div>Token</div><div>Market cap</div><div class="chgs">${CHANGE_WINDOWS.map(([l]) => `<div class="chg">${l}</div>`).join("")}</div><div>Status · Dev</div><div>Age</div></div>${rows}</div>`
       : `<div class="empty-state"><b>The wafer is clean.</b>No launches yet.</div>`}</div>
   </div>`;
 }
@@ -521,7 +551,7 @@ async function viewToken(addr) {
   $("#app").innerHTML = `
   <div class="tp-head">${avatar(L)}
     <div><h1>${esc(L.name)} <span class="muted" style="font-weight:400">$${esc(L.symbol)}</span></h1>
-    <div class="meta">${pills(L)}${devPill(L)}<span class="pill">${circuitLabel(L)}</span>
+    <div class="meta">${pills(L)}${devPill(L)}${changes(L).map((c) => `<span class="pill chg ${c.cls}">${c.label} ${c.text}</span>`).join("")}<span class="pill">${circuitLabel(L)}</span>
       <a class="pill" href="${EXPLORER}/token/${L.token}" target="_blank" rel="noopener">${short(L.token)} ↗</a></div></div>
   </div>
   ${isBem(L.quote) ? `<div class="note vol">Volatile quote: this launch is priced in BEM. Its tape-out target is fixed at ${num(units(cfg.raise, 8), 2)} BEM, so the USD value of the target (and of every price here) moves with BEM.</div>` : ""}
@@ -1206,7 +1236,8 @@ async function stepConfirm() {
       const r3 = await tx3.wait();
       const ev3 = r3.logs.map((l) => { try { return new E.Interface(ABI.pad).parseLog(l); } catch { return null; } }).find((e) => e?.name === "LaunchCreated");
       mark("launch", "done", "✓ launched");
-      toast(`$${flow.sym} is live`);
+      toast(`$${flow.sym} is LIVE`, 6000);
+      confetti();
       if (ev3) { Object.assign(flow, { step: 1, sel: null, name: "", sym: "", img: null, imageURI: "", dev: "" }); location.hash = "#/t/" + ev3.args.token; }
     } catch (e) {
       if (current) mark(current, "err", "failed");

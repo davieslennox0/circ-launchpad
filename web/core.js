@@ -138,6 +138,22 @@
   // and a transaction sent now lands in head + 1 at the earliest.
   function guardBlocksLeft(launchBlock, guard, head) { return Math.max(0, launchBlock + guard - head - 1); }
 
-  return { guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
+  // Change from the price at the start of a window to `current`. points: [[timestamp, price], ...], oldest first.
+  // A token younger than the window is measured from its first point, the launch price. Null if there's no history.
+  function priceChange(points, nowSec, windowSec, current) {
+    if (!points || !points.length || !(current > 0)) return null;
+    let anchor = points[0][1];
+    for (const [ts, p] of points) { if (ts <= nowSec - windowSec) anchor = p; else break; }
+    return anchor > 0 ? (current / anchor - 1) * 100 : null;
+  }
+  function formatChange(pct) {
+    if (pct === null || pct === undefined) return { text: "–", cls: "flat" };
+    if (Math.abs(pct) < 0.05) return { text: "0%", cls: "flat" };
+    const a = Math.abs(pct);
+    const n = a >= 10 ? Math.round(a).toLocaleString("en-US") : String(Number(a.toFixed(1)));
+    return { text: (pct > 0 ? "+" : "-") + n + "%", cls: pct > 0 ? "up" : "down" };
+  }
+
+  return { priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
     recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength };
 });

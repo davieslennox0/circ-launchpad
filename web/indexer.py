@@ -2,8 +2,9 @@
 """Keyless public indexer for the Circ frontend.
 
 The X Layer public RPC caps eth_getLogs at 100 blocks, so a browser cannot cheaply discover launches from the deploy
-block. This process scans CurvePad logs (LaunchCreated, Trade, CurveCompleted, Graduated) and writes a small public
-JSON file per instance. It holds no keys and sends no transactions. The site treats it only as a hint: every number it
+block. This process scans CurvePad logs (LaunchCreated, Trade, CurveCompleted, Graduated) and, after tape-out, the Uniswap v4
+Swap logs of each pool, and writes a small public JSON file per instance. `prices` holds [timestamp, quote per token] for
+the site's 5M / 30M / 1H / 24H changes. It holds no keys and sends no transactions. The site treats it only as a hint: every number it
 shows is re-read from the chain, and it scans forward from `scannedTo` itself.
 
 Env: OUT_DIR (default /srv/circ-web/data), RPC_URL, RPC_FALLBACK_URL (comma-separated), POLL_SECONDS. Instances are fixed below.
@@ -21,6 +22,13 @@ OUT = os.environ.get("OUT_DIR", "/srv/circ-web/data")
 POLL = int(os.environ.get("POLL_SECONDS", "4"))
 CHUNK = 100
 KEEP_TRADES = 150
+KEEP_PRICE_SECONDS = 86400  # the longest change window
+KEEP_PRICES = 3000
+INDEX_VERSION = 2  # 2 added `prices`: an older file is scanned again from the start
+POOL_MANAGER = "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32"
+TOPIC_SWAP = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"  # Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)
+SEL_QUOTE_CONFIG = "0x9cd57cad"  # quoteConfig(address)
+BEM = "0x60e62efa9405d6873c5deabd4e6cc91c25363952"  # 8 decimals; WOKB has 18
 
 # abi 2 = LaunchCreated with imageURI (SPEC A9). prod is production v3; test is the v3 CIRC-TEST instance.
 INSTANCES = {
@@ -84,16 +92,91 @@ def block_ts(n):
     return _ts[n]
 
 
+def migrate(s):
+    """Keeps what's there and scans again from the start, to fill in `prices`."""
+    s["v"] = INDEX_VERSION
+    s["scannedTo"] = s["startBlock"] - 1
+    s.pop("poolScannedTo", None)
+    for L in s["launches"].values():
+        L["prices"], L["lastPt"], L["startPt"] = [], None, False
+
+
+def add_point(L, n, i, ts, price, now=None):
+    """Appends a price once. Scans only move forward, and a repeated window is skipped by (block, logIndex)."""
+    if L.get("lastPt") and [n, i] <= L["lastPt"]:
+        return
+    L["lastPt"] = [n, i]
+    pts = L.setdefault("prices", [])
+    pts.append([ts, price])
+    cutoff = (now if now is not None else time.time()) - KEEP_PRICE_SECONDS
+    while len(pts) > 1 and pts[1][0] <= cutoff:  # keep one point older than the window, as its anchor
+        pts.pop(0)
+    del pts[:-KEEP_PRICES]
+
+
+def quote_decimals(quote):
+    return 8 if quote.lower() == BEM else 18
+
+
+def curve_price(v_quote, v_token, quote):
+    return (v_quote / 10 ** quote_decimals(quote)) / (v_token / 1e18)
+
+
+def pool_price(sqrt_price_x96, token, quote):
+    """Quote per token. v4 sorts a pool's currencies by address, and sqrtPrice is currency1 per currency0."""
+    raw = (sqrt_price_x96 / 2 ** 96) ** 2
+    if int(token, 16) > int(quote, 16):
+        raw = 1 / raw
+    return raw * 10 ** (18 - quote_decimals(quote))
+
+
+_cfg = {}
+
+
+def add_start_points(s):
+    """The launch price anchors a token younger than the window. It isn't in any log, so it comes from quoteConfig."""
+    for L in s["launches"].values():
+        if L.get("startPt"):
+            continue
+        key = (s["pad"], L["quote"])
+        if key not in _cfg:
+            _cfg[key] = words(rpc("eth_call", [{"to": s["pad"], "data": SEL_QUOTE_CONFIG + L["quote"][2:].rjust(64, "0")}, "latest"]))
+        L.setdefault("prices", []).insert(0, [L["ts"], curve_price(_cfg[key][0], _cfg[key][1], L["quote"])])
+        L["startPt"] = True
+
+
+def scan_pools(s):
+    """Prices after tape-out: Swap logs of every graduated pool, up to where the pad scan has reached."""
+    pools = {L["graduated"]["poolId"]: L for L in s["launches"].values() if L.get("graduated")}
+    if not pools:
+        s["poolScannedTo"] = s["scannedTo"]
+        return
+    if "poolScannedTo" not in s:
+        s["poolScannedTo"] = min(L["graduated"]["block"] for L in pools.values()) - 1
+    while s["poolScannedTo"] < s["scannedTo"]:
+        fr = s["poolScannedTo"] + 1
+        to = min(s["scannedTo"], fr + CHUNK - 1)
+        logs = rpc("eth_getLogs", [{"address": POOL_MANAGER, "topics": [TOPIC_SWAP, list(pools)], "fromBlock": hex(fr), "toBlock": hex(to)}])
+        for lg in sorted(logs, key=lambda x: (int(x["blockNumber"], 16), int(x["logIndex"], 16))):
+            L = pools.get(lg["topics"][1])
+            if L:
+                n = int(lg["blockNumber"], 16)
+                add_point(L, n, int(lg["logIndex"], 16), block_ts(n), pool_price(words(lg["data"])[2], L["token"], L["quote"]))
+        s["poolScannedTo"] = to
+
+
 def load(name):
     inst = INSTANCES[name]
     try:
         with open(os.path.join(OUT, f"index-{name}.json")) as f:
             s = json.load(f)
         if s.get("pad", "").lower() == inst["pad"].lower():
+            if s.get("v") != INDEX_VERSION:
+                migrate(s)
             return s  # same pad: resume
     except (OSError, ValueError):
         pass
-    return {"pad": inst["pad"], "startBlock": inst["start"], "scannedTo": inst["start"] - 1, "launches": {}}  # new or repointed
+    return {"v": INDEX_VERSION, "pad": inst["pad"], "startBlock": inst["start"], "scannedTo": inst["start"] - 1, "launches": {}}  # new or repointed
 
 
 def save(name, s):
@@ -130,7 +213,7 @@ def apply(s, lg):
             "token": token, "quote": addr(lg["topics"][2]), "circuitNft": addr(lg["topics"][3]),
             "circuitId": w[0], "container": "0x" + hex(w[1])[2:].rjust(40, "0"),
             "creator": "0x" + hex(w[2])[2:].rjust(40, "0"), "block": n, "ts": block_ts(n),
-            "tx": lg["transactionHash"], "trades": [], "graduated": None,
+            "tx": lg["transactionHash"], "trades": [], "graduated": None, "prices": [],
             "imageURI": image_uri(lg["data"]) if t0 == TOPICS["launch2"] else "",
         }
     else:
@@ -140,6 +223,9 @@ def apply(s, lg):
             return
         if t0 == TOPICS["trade"]:
             i = int(lg["logIndex"], 16)
+            v = words(lg["data"])
+            if len(v) >= 6 and v[5]:  # the Trade event carries the reserves after the trade
+                add_point(L, n, i, block_ts(n), curve_price(v[4], v[5], L["quote"]))
             if any(t["tx"] == lg["transactionHash"] and t.get("i") == i for t in L["trades"]):
                 return
             w = words(lg["data"])
@@ -161,10 +247,13 @@ def step(name, s):
         logs = rpc("eth_getLogs", [{"address": s["pad"], "topics": topics, "fromBlock": hex(fr), "toBlock": hex(to)}])
         for lg in sorted(logs, key=lambda x: (int(x["blockNumber"], 16), int(x["logIndex"], 16))):
             apply(s, lg)
+        add_start_points(s)
         s["scannedTo"] = to
         s["updated"] = int(time.time())
         if to == head or (to - s["startBlock"]) % 2000 < CHUNK:
             save(name, s)
+    add_start_points(s)
+    scan_pools(s)
 
 
 def main():

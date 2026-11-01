@@ -174,7 +174,7 @@ h1 em { font-style: normal; color: var(--muted); }
 /* ---------- list ---------- */
 .list { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--panel); }
 .row {
-  display: grid; grid-template-columns: 1.6fr 1fr 1fr 1.3fr auto; gap: 14px; align-items: center;
+  display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, .9fr) repeat(4, 44px) minmax(0, 1.2fr) auto; gap: 10px; align-items: center;
   padding: 14px 16px; border-top: 1px solid var(--line); text-decoration: none;
 }
 .row:first-child { border-top: 0; }
@@ -274,7 +274,7 @@ footer a { color: var(--muted); text-decoration: none; }
   .hero, .wafer-wrap, .cols { grid-template-columns: 1fr; }
   .hero { padding-top: 36px; }
   header.top .wrap nav.links { display: none; }
-  .row { grid-template-columns: 1.4fr 1fr auto; }
+  .row { grid-template-columns: minmax(0, 1.4fr) minmax(0, .9fr) repeat(4, 44px) minmax(0, 1fr) auto; }
   .row .hide-m { display: none; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .wafer { max-width: 380px; margin: 0 auto; width: 100%; }
@@ -399,6 +399,18 @@ html, body { overflow-x: clip; }
   .row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; }
   .row .tok { grid-column: 1 / -1; min-width: 0; }
   .row .tok small { overflow-wrap: anywhere; }
-  .row .hide-m { display: block; grid-column: 1 / -1; }
+  .row > .mono:nth-child(2) { grid-column: 1 / -1; }
+  .row .chgs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; grid-column: 1 / -1; }
+  .row .chg::before { content: attr(data-l); display: block; color: var(--dim); font-size: 10.5px; margin-bottom: 2px; }
   .row .status-cell { grid-column: 1 / -1; }
 }
+
+/* Price changes */
+.chgs { display: contents; }
+.chg { font: 12px var(--mono); }
+.chg.up { color: #8FBF9F; }
+.chg.down { color: #DE9A92; }
+.chg.flat { color: var(--muted); }
+.pill.chg.up { border-color: rgba(107,158,125,.45); background: rgba(107,158,125,.14); }
+.pill.chg.down { border-color: rgba(194,99,90,.45); background: rgba(194,99,90,.14); }
+.bar.mini { height: 3px; margin-top: 6px; }

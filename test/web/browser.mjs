@@ -67,6 +67,15 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   check(`${label}: no pink in the UI`, !(await p.ev(`getComputedStyle(document.documentElement).getPropertyValue("--hub")`)).toLowerCase().includes("ea3680"));
   const foot = await p.ev(text("footer"));
   check(`${label}: footer has the copyright and not the old line`, foot.includes("Syketex Technologies") && !/non-custodial|read from the chain|\(196\)/.test(foot));
+  if (STAGING) {
+    check(`${label}: every token row has 5M, 30M, 1H and 24H`, await p.ev(`[...document.querySelectorAll("a.row")].every((r) => r.querySelectorAll(".chg").length === 4)`));
+    check(`${label}: a dumped token shows a red change`, await p.ev(`document.querySelectorAll("a.row .chg.down").length > 0`), await p.ev(`[...document.querySelectorAll("a.row")].map((r) => [...r.querySelectorAll(".chg")].map((c) => c.innerText).join(" ")).join(" | ")`));
+  }
+  await p.ev(`confetti()`);
+  check(`${label}: confetti runs`, await p.ev(`!!document.querySelector("#confetti")`));
+  await sleep(700);
+  await p.shot(`${label}-confetti`);
+  check(`${label}: confetti clears itself`, await p.until(`!document.querySelector("#confetti")`, 8000));
   await p.ev(`document.querySelector("a.row")?.scrollIntoView({ block: "center" })`);
   await sleep(300);
   await p.shot(`${label}-rows`);

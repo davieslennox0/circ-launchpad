@@ -74,6 +74,27 @@ test("guard: blocks left match the contract's block.number < launchBlock + GUARD
   assert.equal(C.guardBlocksLeft(100, 30, 500), 0);
 });
 
+test("price change: anchors at the start of the window, or at launch for a younger token", () => {
+  const pts = [[1000, 10], [5000, 20], [9000, 40]];
+  assert.equal(C.priceChange(pts, 10000, 300, 40), 0);      // nothing in the last 5 minutes
+  assert.equal(C.priceChange(pts, 9100, 300, 20), 0 - 0);   // anchored on the 5000 point
+  assert.equal(C.priceChange(pts, 10000, 3600, 40), 100);   // 6400 falls after 5000: 20 -> 40
+  assert.equal(C.priceChange(pts, 10000, 86400, 5), -50);   // younger than the window: from launch
+  assert.equal(C.priceChange([], 10000, 300, 1), null);
+  assert.equal(C.priceChange(null, 10000, 300, 1), null);
+  assert.equal(C.priceChange(pts, 10000, 300, 0), null);
+});
+
+test("price change: format and colour", () => {
+  assert.deepEqual(C.formatChange(2), { text: "+2%", cls: "up" });
+  assert.deepEqual(C.formatChange(-57.4), { text: "-57%", cls: "down" });
+  assert.deepEqual(C.formatChange(-96.2), { text: "-96%", cls: "down" });
+  assert.deepEqual(C.formatChange(0.34), { text: "+0.3%", cls: "up" });
+  assert.deepEqual(C.formatChange(1234.6), { text: "+1,235%", cls: "up" });
+  assert.deepEqual(C.formatChange(0.01), { text: "0%", cls: "flat" });
+  assert.deepEqual(C.formatChange(null), { text: "–", cls: "flat" });
+});
+
 test("logos: only ipfs:// with a valid CID renders", () => {
   const hide = new Set();
   assert.equal(C.safeImage(`ipfs://${CID}`, null, hide), CID);
