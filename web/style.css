@@ -343,3 +343,21 @@ footer a { color: var(--muted); text-decoration: none; }
 .qopt.on { border-color: var(--hub); background: var(--hub-soft); }
 details.adv { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 14px; }
 details.adv summary { cursor: pointer; color: var(--muted); font: 13px var(--mono); min-height: 44px; display: flex; align-items: center; }
+
+/* avatars with IPFS logos: initials sit underneath, the image covers them once loaded */
+.av { position: relative; overflow: hidden; }
+.av img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.av span { position: relative; z-index: 0; }
+.av img { z-index: 1; }
+
+/* one progress bar for mint -> tape out -> launch, each signature labelled */
+.run { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 12px 14px; margin: 14px 0 4px; }
+.sig { display: flex; align-items: center; gap: 10px; min-height: 40px; font-size: 13.5px; color: var(--muted); }
+.sig .dotk { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line-strong); display: grid; place-items: center; font: 600 11px var(--mono); flex: none; }
+.sig .st { margin-left: auto; font-size: 12px; }
+.sig.on { color: var(--ink); }
+.sig.on .dotk { border-color: var(--hub); color: var(--hub); }
+.sig.done .dotk { background: var(--green); border-color: var(--green); color: #fff; }
+.sig.done .st { color: #5fd884; }
+.sig.err .dotk { border-color: var(--red); color: var(--red); }
+.sig.err .st { color: var(--red); }

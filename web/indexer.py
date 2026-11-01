@@ -19,14 +19,16 @@ POLL = int(os.environ.get("POLL_SECONDS", "4"))
 CHUNK = 100
 KEEP_TRADES = 150
 
+# v2 = CurvePad with imageURI in LaunchCreated (SPEC A9); v1 = original ABI (CIRC-TEST only).
 INSTANCES = {
-    "prod": {"pad": "0x45E97E81d50D0c77170D9cb622f9d255768E4827", "start": 74717838},
-    "test": {"pad": "0xa66D7020a374BCC3e6424B9075E481617C669057", "start": 74714250},
+    "prod": {"pad": "0x071a1ff737415Ddc2085629D80B7C68741e17A18", "start": 74725398, "abi": 2},
+    "test": {"pad": "0xa66D7020a374BCC3e6424B9075E481617C669057", "start": 74714250, "abi": 1},
 }
 
 # keccak256 of the CurvePad event signatures (cast keccak; see src/CurvePad.sol)
 TOPICS = {
     "launch": "0x61374329b2b4e0725b47012a0ca5901e642624565fbbe811e930b8e1c09758a7",
+    "launch2": "0x5ad9b4b4e9363f6d4e2023053eabdc5dc7ff9b01d448dd79dd874bf5b82f9ebe",
     "trade": "0x2c76e7a47fd53e2854856ac3f0a5f3ee40d15cfaa82266357ea9779c486ab9c3",
     "completed": "0xa0a0c0fe2202393c1af7f6919ecd56c835ac1395aa519b430721ea8135e51acc",
     "graduated": "0xdf9e4d7e38c0b4f9b2b0c31c082370dd912b89a99ebaf6129c106a6b81253f67",
@@ -66,7 +68,9 @@ def block_ts(n):
 def load(name):
     try:
         with open(os.path.join(OUT, f"index-{name}.json")) as f:
-            return json.load(f)
+            s = json.load(f)
+        if s.get("pad", "").lower() == INSTANCES[name]["pad"].lower():
+            return s  # same pad: resume; a repointed instance starts fresh below
     except (OSError, ValueError):
         inst = INSTANCES[name]
         return {"pad": inst["pad"], "startBlock": inst["start"], "scannedTo": inst["start"] - 1, "launches": {}}
@@ -80,10 +84,23 @@ def save(name, s):
     os.replace(p + ".tmp", p)
 
 
+def image_uri(data):
+    """Decode the trailing `string imageURI` of a v2 LaunchCreated. Returned raw; the site validates and escapes it."""
+    try:
+        d = bytes.fromhex(data[2:])
+        off = int.from_bytes(d[96:128], "big")
+        ln = int.from_bytes(d[off:off + 32], "big")
+        if ln > 256:
+            return ""
+        return d[off + 32:off + 32 + ln].decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
 def apply(s, lg):
     t0 = lg["topics"][0]
     n = int(lg["blockNumber"], 16)
-    if t0 == TOPICS["launch"]:
+    if t0 in (TOPICS["launch"], TOPICS["launch2"]):
         token = addr(lg["topics"][1])
         w = words(lg["data"])
         s["launches"][token] = {
@@ -91,6 +108,7 @@ def apply(s, lg):
             "circuitId": w[0], "container": "0x" + hex(w[1])[2:].rjust(40, "0"),
             "creator": "0x" + hex(w[2])[2:].rjust(40, "0"), "block": n, "ts": block_ts(n),
             "tx": lg["transactionHash"], "trades": [], "graduated": None,
+            "imageURI": image_uri(lg["data"]) if t0 == TOPICS["launch2"] else "",
         }
     else:
         token = addr(lg["topics"][1])
@@ -109,7 +127,8 @@ def apply(s, lg):
 
 def step(name, s):
     head = int(rpc("eth_blockNumber", []), 16) - 1
-    topics = [[TOPICS["launch"], TOPICS["trade"], TOPICS["completed"], TOPICS["graduated"]]]
+    launch = TOPICS["launch2"] if INSTANCES[name]["abi"] == 2 else TOPICS["launch"]
+    topics = [[launch, TOPICS["trade"], TOPICS["completed"], TOPICS["graduated"]]]
     while s["scannedTo"] < head:
         fr = s["scannedTo"] + 1
         to = min(head, fr + CHUNK - 1)
