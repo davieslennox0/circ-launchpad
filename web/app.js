@@ -12,8 +12,8 @@ const CHAIN_ID = 196;
 const RPC = "https://rpc.xlayer.tech";
 const EXPLORER = "https://www.oklink.com/x-layer";
 const INSTANCES = {
-  prod: { pad: "0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7", label: "Mainnet" },     // production v3
-  test: { pad: "0x8f2bbd9dA778071a8B6E9C2D3fEC3f3a6850E6BA", label: "CIRC-TEST" },   // v3 test instance, read-only preview
+  prod: { pad: "0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7" },     // production v3
+  test: { pad: "0x8f2bbd9dA778071a8B6E9C2D3fEC3f3a6850E6BA" },   // v3 test instance, used only by the staging copy (config.js)
 };
 const PIN_ENDPOINT = "https://circ-launchpad-pin.vercel.app/api/pin"; // Vercel Function; the Pinata key lives only there
 const IPFS_GATEWAYS = ["https://ipfs.filebase.io/ipfs/", "https://dweb.link/ipfs/"]; // tried in order, then initials
@@ -106,7 +106,7 @@ const STATUS_CLS = ["trading", "complete", "grad"];
 
 const CFG = window.CIRC_CONFIG || {}; // config.js; a staging copy sets { staging: true }: TEST pad only, launching allowed
 const state = {
-  inst: CFG.staging ? "test" : localGet("circ.inst") || "prod",
+  inst: CFG.staging ? "test" : "prod", // fixed per site: there is no switch between instances
   account: null, signer: null,
   pad: null,       // on-chain pad facts
   prices: null,    // {okbUsd, bemUsd}
@@ -114,8 +114,6 @@ const state = {
   head: 0,
 };
 
-function localGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
-function localSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 
 // ---------------------------------------------------------------- formatting
 function num(x, d = 2) {
@@ -359,13 +357,9 @@ async function sendTx(label, fn) {
 function setBanner() {
   const b = $("#banner");
   if (CFG.staging) {
-    b.hidden = false; b.classList.add("staging"); $("#inst").hidden = true;
+    b.hidden = false; b.classList.add("staging");
     b.firstElementChild.textContent = "STAGING: tiny test curves on the CIRC-TEST pad, not production. Transactions are real, on X Layer mainnet, and cost real OKB.";
-  } else if (state.inst === "test") {
-    b.hidden = false;
-    b.firstElementChild.textContent = "Preview data: you're viewing the CIRC-TEST instance (a tiny 0.099 WOKB test curve used for the end-to-end run). Switch to Mainnet for production.";
   } else b.hidden = true;
-  document.querySelectorAll("#inst button").forEach((x) => x.classList.toggle("on", x.dataset.inst === state.inst));
   $("#foot-pad").innerHTML = `CurvePad <a class="mono" href="${EXPLORER}/address/${state.pad?.addr || INSTANCES[state.inst].pad}" target="_blank" rel="noopener">${short(INSTANCES[state.inst].pad)}</a>`;
 }
 
@@ -453,8 +447,7 @@ async function viewFloor() {
   <div class="wafer-wrap">
     <div class="wafer"><div class="grid">${cells.join("")}</div></div>
     <div>${L.length ? `<div class="list"><div class="row head"><div>Token</div><div>Market cap</div><div class="hide-m">Curve</div><div>Status · Dev</div><div>Age</div></div>${rows}</div>`
-      : `<div class="empty-state"><b>The wafer is clean.</b>No launches on ${INSTANCES[state.inst].label} yet. ${state.inst === "prod" && !CFG.staging
-        ? `<br><br><button class="btn" data-inst-go="test">See it with preview data</button>` : ""}</div>`}</div>
+      : `<div class="empty-state"><b>The wafer is clean.</b>No launches yet.</div>`}</div>
   </div>`;
 }
 
@@ -492,7 +485,7 @@ function curveSvg(L) {
 async function viewToken(addr) {
   let L = state.launches.find((x) => x.token.toLowerCase() === addr.toLowerCase());
   if (!L) L = await readLaunch({ token: addr, trades: [], block: 0 }).catch(() => null);
-  if (!L) { $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Not a launch on ${INSTANCES[state.inst].label}</b>${esc(addr)}</div>`; return; }
+  if (!L) { $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Not a Circ launch</b>${esc(addr)}</div>`; return; }
   const cfg = L.cfg, qUsd = quoteUsd(L.quote), qd = cfg.dec, sym = cfg.sym;
   const head = await rp.getBlockNumber();
   const guardLeft = L.launchBlock + state.pad.guard - head;
@@ -934,10 +927,6 @@ function stepsBar() {
 }
 
 async function viewLaunch() {
-  if (state.inst !== "prod" && !CFG.staging) {
-    $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Launching is mainnet-only</b>The preview instance is read-only.<br><br><button class="btn" data-inst-go="prod">Switch to Mainnet</button></div>`;
-    return;
-  }
   if (flow.step === 1) return stepPick();
   if (flow.step === 2) return stepDetails();
   return stepConfirm();
@@ -1234,13 +1223,7 @@ async function route() {
     $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Couldn't read the chain</b>${esc(e.shortMessage || e.message)}<br><br><button class="btn" data-reload>Retry</button></div>`;
   }
 }
-const switchInst = (i) => { state.inst = i; localSet("circ.inst", i); booted = false; location.hash = "#/"; route(); };
-document.querySelectorAll("#inst button").forEach((b) => b.onclick = () => switchInst(b.dataset.inst));
-document.addEventListener("click", (e) => {
-  const g = e.target.closest("[data-inst-go]");
-  if (g) switchInst(g.dataset.instGo);
-  else if (e.target.closest("[data-reload]")) location.reload();
-});
+document.addEventListener("click", (e) => { if (e.target.closest("[data-reload]")) location.reload(); });
 // Logo gateways: "error" doesn't bubble, so listen in the capture phase.
 document.addEventListener("error", (e) => {
   const img = e.target;

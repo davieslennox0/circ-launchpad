@@ -86,12 +86,6 @@ nav.links a.on { color: var(--ink); background: var(--s2); }
 .btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
 .btn.block { width: 100%; padding: 13px; border-radius: var(--r-sm); }
 
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; gap: 2px; }
-.seg button {
-  border: 0; background: transparent; color: var(--muted); padding: 5px 11px; border-radius: 999px; cursor: pointer;
-  font-size: 12.5px;
-}
-.seg button.on { background: var(--s3); color: var(--ink); }
 
 .banner {
   border-bottom: 1px solid rgba(255, 242, 0, .18);
@@ -374,7 +368,6 @@ html, body { overflow-x: clip; }
 @media (max-width: 520px) {
   header.top .wrap { height: 56px; }
   .brand small { display: none; }
-  .seg button { padding: 4px 8px; font-size: 11.5px; }
   #connect { padding: 8px 12px; font-size: 13px; max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
   .spec dl { grid-template-columns: minmax(0, 1fr) auto; }
   .spec dd { overflow-wrap: anywhere; }
