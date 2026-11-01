@@ -22,3 +22,13 @@ UI requirements:
 - Fees arrive as **WOKB** (wrapped OKB), not native OKB: show it as OKB with a "wrapped" hint and offer an unwrap.
   Protocol/sink recipients will likewise see WOKB, not native OKB, in their wallets.
 - LP fees also accrue in the launch token itself; show those separately (claimable the same two ways).
+
+## Dev holdings
+
+Dev buys are uncapped by owner decision, so the site shows "Dev holds X%" on every list row and the token page, highlighted
+above 10%. It's the launching wallet's current balance over total supply, so tokens moved to another wallet don't count.
+
+## Wallets
+
+Injected wallets only: EIP-6963 picker, then `window.ethereum`. No WalletConnect. On a phone browser with no wallet, the site
+offers "Open in OKX Wallet" (`okx://wallet/dapp/url` via web3.okx.com). OKX Connect SDK is not used.

@@ -20,7 +20,7 @@ The Circ hook is immutable, has no admin and is not upgradeable. It sets only tw
 | Flag | Behaviour |
 |---|---|
 | `beforeInitialize` | Reverts unless the caller is Circ's Graduator contract, so nobody can create the pool early or at a wrong price |
-| `beforeAddLiquidity` | Reverts unless Circ's Graduator authorised that exact add (its own one-time full-range mint, made through the v4 PositionManager) |
+| `beforeAddLiquidity` | Until a pool's graduation mint has settled, reverts unless Circ's Graduator authorised that exact add (its own one-time full-range mint through the v4 PositionManager). After that, anyone may add their own liquidity |
 
 It has **no swap, donate or remove-liquidity hooks** and **no delta-returning flags**.
 
@@ -34,23 +34,23 @@ It has **no swap, donate or remove-liquidity hooks** and **no delta-returning fl
 - Currencies: the launched token and WOKB (`0xe538905cf8410324e03A5A23C1c177a474D59b2b`) or BEM
   (`0x60e62Efa9405d6873C5deaBD4E6CC91c25363952`), sorted.
 - Pool key: (currency0, currency1, fee 10000, tickSpacing 200, hooks = CircHook).
-- Pool liquidity: exactly one locked full-range position. No other liquidity can be added.
+- Pool liquidity: one locked full-range position from graduation, which can never be removed. Anyone may add or remove their own liquidity after that.
 - Discovery:
   - every graduation emits `Graduated(address token, bytes32 poolId, uint256 positionId, uint256 raised, uint256 lpTokens)`
     from CurvePad;
   - the PoolManager emits its standard `Initialize` event with `hooks = CircHook`.
 
-## Addresses (filled in at deployment)
+## Addresses
 
 | Contract | Address |
 |---|---|
-| CircHook | `<after deployment>` |
-| CurvePad (emits `Graduated`) | `<after deployment>` |
-| Graduator | `<after deployment>` |
+| CircHook | `0x9Afb0AB86CC8dc087C562e82500a504e7c4ae800` |
+| CurvePad (emits `Graduated`) | `0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7` |
+| Graduator | `0xf12c68d5797d97776Cf30EEC8d90491790a7e35f` |
 | Uniswap v4 PoolManager | `0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32` |
 | Uniswap v4 PositionManager | `0xcF1EAFC6928dC385A342E7C6491d371d2871458b` |
 
-Source is verified on Sourcify / OKLink at deployment, and a fork test swaps through Universal Router 2.1.2. Happy to
+Source is an exact match on Sourcify for all contracts, and live swaps through Universal Router 2.1.2 passed on the v3 test instance. Happy to
 provide anything else your review needs.
 
 Contact: `<your contact>`

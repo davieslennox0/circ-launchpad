@@ -1,61 +1,61 @@
 # Circ Launchpad: X Layer mainnet deployments
 
-## Production v2 (current, 2026-11-01)
+## Production v3 (current, 2026-11-01)
 
-Deployed from `0xc41EFaC70571bF7D7Ef7d402C66E36108202b35D` with `script/Deploy.s.sol:Deploy` at block 74,725,398
-(broadcast record: `broadcast/Deploy.s.sol/196/run-1793494434397.json`). Adds SPEC A8 (one launch per Circuit,
-`isLaunched`) and A9 (`imageURI` in `createLaunch`, emitted in `LaunchCreated`).
+Deployed from `0xc41EFaC70571bF7D7Ef7d402C66E36108202b35D` with `script/Deploy.s.sol:Deploy` at block 74,785,331
+(broadcast record in `broadcast/Deploy.s.sol/196/`). Adds SPEC A10: name and symbol limits, fee views, GPL-2.0-or-later.
 
 | Contract | Address |
 |---|---|
-| CurvePad | `0x071a1ff737415Ddc2085629D80B7C68741e17A18` |
-| PositionLocker | `0x30B948F015bf266BC617d52B4A458C2860CbEb43` |
-| CircHook (v4 hook, flags 0x2800) | `0xB9df0fC41D85411207ea820Cd3b10fd8eEF7a800` |
-| Graduator | `0x3aA6A1990C27b1995EAD5922F24036ac6Ec50E7D` |
-| TokenDeployer | `0xB6a6aD8eD30428E67b1A0c7AfA1921a8D8f79a57` |
+| CurvePad | `0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7` |
+| PositionLocker | `0x125DEc95d0186f98975dF17F083aB4420CC1E586` |
+| CircHook (v4 hook, flags 0x2800) | `0x9Afb0AB86CC8dc087C562e82500a504e7c4ae800` |
+| Graduator | `0xf12c68d5797d97776Cf30EEC8d90491790a7e35f` |
+| TokenDeployer | `0xB0b10c142F323c08C529286d2dC5c989d869351c` |
 | Protocol (treasury) Safe 1.5.0, 2-of-3 | `0x79ac0889b0aCa2C5233EeECE7468195ad7A58997` |
 | Sink Safe 1.5.0, 2-of-3 | `0x4E2020B7Ef36a22550EDf603C556EFA8c17b65F3` |
 
 Deploy transactions:
-- PositionLocker: https://www.oklink.com/x-layer/tx/0x8a6f77c2fb55d04226bafff6c3f37880c7846a5675db43bb251327b38d158cdf
-- CurvePad (creates TokenDeployer, CircHook via CREATE2, Graduator): https://www.oklink.com/x-layer/tx/0x04a1447b035c5d9d6ba350421b471c9d87e327991298f8dabb60a98600dfdf91
+- PositionLocker: https://www.oklink.com/x-layer/tx/0x934962bd620740a17796c11681a824f6eee1b995e19c6f7eccf2828b8b921a6e
+- CurvePad (creates TokenDeployer, CircHook via CREATE2, Graduator): https://www.oklink.com/x-layer/tx/0x9a360ff4b9060cacac255e44330aa91151a8ac73e91b62f07acf5c62e1ce8282
 
-Curve constants (owner-approved at OKB $110.60 / BEM $18.43; live drift at broadcast 0.009% / 0.60%):
-- WOKB vQuote0 `38393377713177396386` (raise ≈ 121.07 WOKB ≈ $13,389)
-- BEM vQuote0 `23044916836` (raise ≈ 726.7 BEM; volatile quote)
+Curve constants (owner-approved at OKB $114.26 / BEM $21.71; live drift at broadcast 0.08% / 1.46%):
+- WOKB vQuote0 `37161178063163679453` (raise ≈ 117.18 WOKB ≈ $13,389)
+- BEM vQuote0 `19558480651` (raise ≈ 616.7 BEM; volatile quote)
 - vToken0 / curveSupply / lpTokens: `1061538461538461538461538462` / `805950034987136158382022685` / `194049965012863841617977315`
-- `MAX_IMAGE_URI` = 256 bytes
+- Dev buy is uncapped and exempt from anti-snipe, by owner decision. The site shows "Dev holds X%" instead.
 
 Verification:
-- Sourcify: all five contracts `exact_match`. CurvePad via the full compiler input (Sourcify issue #618, via-IR).
-- OKLink: PositionLocker, CircHook, Graduator, TokenDeployer verified. CurvePad: OKLink's API again returns "Unable to
-  verify" for the input Sourcify matches exactly. Manual upload: OKLink → contract → Verify → "Solidity
-  (Standard-Json-Input)", compiler `v0.8.24+commit.e11b9ed9`, contract `src/CurvePad.sol:CurvePad`, file
-  `docs/verification/CurvePad-v2.standard-input.json`, constructor arguments (ABI-encoded, no 0x) from
-  `docs/verification/CurvePad-v2.constructor-args.txt`.
+- Sourcify: all five contracts `exact_match`. CurvePad needs the full compiler input.
+- OKLink: PositionLocker, CircHook, Graduator, TokenDeployer verified. CurvePad fails on OKLink's side (`server error`,
+  "Unable to verify") for the input that recompiles byte for byte to the deployed runtime (CI run 41332707443); support
+  request pending. Input: `docs/verification/CurvePad-v3.standard-input.json`, `CurvePad-v3.constructor-args.txt`.
 
-Keeper: `circ-keeper-v2` systemd service (`deploy/circ-keeper-v2.service`), keeper
-`0x2b41B054C8Ae9fE81Fc64928377e315c2DE6856A`, env `/etc/circ-keeper-v2.env` (mode 600), log `/var/log/circ-keeper-v2.log`,
-state `/var/lib/circ-keeper-v2/state.json`. Started and confirmed caught up before the v1 keeper was stopped.
+Live test: the same code passed 62/62 on the CIRC-TEST instance (`docs/E2E_RESULTS-v3.md`).
 
-## Production v1: DEPRECATED (2026-10-31 → 2026-11-01)
+Services on the server (dedicated `circ` user, code in `/opt/circ`, not the git checkout):
+- `circ-keeper`: keeper `0x2b41B054C8Ae9fE81Fc64928377e315c2DE6856A`, encrypted keystore in `/etc/circ`, log
+  `/var/log/circ-keeper.log`, state `/var/lib/circ-keeper`.
+- `circ-indexer`: keyless, writes `/srv/circ-web/data`, log `/var/log/circ-indexer.log`.
+- Site: https://circ.getsarf.xyz from `/srv/circ-web` (Caddy block in `deploy/Caddyfile.circ`).
+- Logo pinning: https://circ-launchpad-pin.vercel.app/api/pin (`pin/`, Vercel project root `pin`).
 
-**Do not use.** Replaced by v2 before any launch: it lacks the one-launch-per-Circuit guard and `imageURI`. Zero
-launches, zero fees, no funds held (checked over every block from its deploy to the switch). Its keeper
-(`circ-keeper`) is stopped and disabled. Contracts stay on chain and verified for the record.
+To update code: copy `script/keeper/keeper.py` and `web/indexer.py` to `/opt/circ`, the `web/` files to `/srv/circ-web`.
+Before each frontend release run `node test/web/browser.mjs`.
 
-| Contract | Address |
-|---|---|
-| CurvePad | `0x45E97E81d50D0c77170D9cb622f9d255768E4827` |
-| PositionLocker | `0xFCDE10159a59E81f85F6affB6A8d01e7845EBC50` |
-| CircHook | `0x8FB8A9C27EAEb0Ed1434b3EBd2a0eaC7FE82a800` |
-| Graduator | `0xe956DDCC15E32E8c8f4AFb7253767bc5f5E630BB` |
-| TokenDeployer | `0x3c6F9E00193B698242cC6Bb128C0e37307c7A8D1` |
+## Instances not to use
 
-Deployed at block 74,717,838 (`broadcast/Deploy.s.sol/196/run-1793486874792.json`); Sourcify exact match for all five;
-OKLink manual input `docs/verification/CurvePad.standard-input.json`.
+### Production v2: DEPRECATED (2026-11-01)
+Replaced before any launch: no name limits or fee views. Zero launches, no funds. CurvePad
+`0x071a1ff737415Ddc2085629D80B7C68741e17A18`, PositionLocker `0x30B948F015bf266BC617d52B4A458C2860CbEb43`, CircHook
+`0xB9df0fC41D85411207ea820Cd3b10fd8eEF7a800`. Keeper stopped and removed.
 
-## CIRC-TEST (test only)
+### Production v1: DEPRECATED (2026-11-01)
+Replaced before any launch: no one-launch-per-Circuit guard or `imageURI`. Zero launches, no funds. CurvePad
+`0x45E97E81d50D0c77170D9cb622f9d255768E4827`, PositionLocker `0xFCDE10159a59E81f85F6affB6A8d01e7845EBC50`, CircHook
+`0x8FB8A9C27EAEb0Ed1434b3EBd2a0eaC7FE82a800`.
 
-CurvePad `0xa66D7020a374BCC3e6424B9075E481617C669057` (tiny 0.099 WOKB curve, pre-A8/A9 ABI), used for the live E2E run
-(`docs/E2E_RESULTS.md`). Never point users at it.
+### CIRC-TEST (test only)
+Tiny 0.099 WOKB curves used for live end-to-end runs, never for users. v3 code: CurvePad
+`0x8f2bbd9dA778071a8B6E9C2D3fEC3f3a6850E6BA` (shown on the site as "Preview data"). Older code: CurvePad
+`0xa66D7020a374BCC3e6424B9075E481617C669057`.

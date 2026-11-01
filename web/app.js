@@ -88,7 +88,17 @@ const ABI = {
   container: ["function execute(address,uint256,bytes,uint8) payable returns (bytes)"],
 };
 
-const rp = new E.JsonRpcProvider(RPC, CHAIN_ID, { staticNetwork: true, batchMaxCount: 1 });
+// The public RPC allows about 7 requests a second per visitor, and its 429s carry no CORS header, so a browser sees them as
+// network failures. Those are retried with a short backoff; contract reverts come back in the reply and aren't retried.
+class RetryProvider extends E.JsonRpcProvider {
+  async _send(payload) {
+    for (let i = 0; ; i++) {
+      try { return await super._send(payload); }
+      catch (e) { if (i >= 3) throw e; await new Promise((r) => setTimeout(r, 400 * 2 ** i)); }
+    }
+  }
+}
+const rp = new RetryProvider(RPC, CHAIN_ID, { staticNetwork: true, batchMaxCount: 1 });
 const C = (addr, abi, runner = rp) => new E.Contract(addr, abi, runner);
 const $ = (s, el = document) => el.querySelector(s);
 const STATUS = ["Trading", "Complete", "Taped out"];
