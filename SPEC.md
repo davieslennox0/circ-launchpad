@@ -66,6 +66,17 @@ tokens bought per block across all buyers and calls. The dev-buy stays exempt an
 - **Deploy:** curve `vQuote0` values are regenerated from live on-chain prices at deploy time (`script/LivePrices.sol`)
   and printed. A broadcast must carry the owner-approved values and refuses if live prices have moved them more than 2%.
 
+**A8. One launch per Circuit (2026-11-01).** `createLaunch` records `(circuitNft, circuitId)` on first use and reverts
+`AlreadyLaunched` on any later attempt: same or different name/ticker/quote, same or new holder. The flag is permanent
+and survives NFT transfers. `isLaunched(circuitNft, circuitId)` exposes it for frontends. Before A8, CurvePad only
+blocked an exact CREATE2 collision (same holder, name and ticker), so a Circuit could back several launches paying one
+Container. Production was redeployed with A8 before the first launch.
+
+**A9. Token logo URI (2026-11-01).** `createLaunch(circuitNft, circuitId, name, symbol, imageURI, quote, devBuyAmount,
+devBuyMinOut)`. `imageURI` (e.g. `ipfs://<CID>`) is at most `MAX_IMAGE_URI` = 256 bytes (`ImageURITooLong`), and is
+emitted in `LaunchCreated(..., creator, imageURI)`, never stored. Empty is allowed. Frontends load it through an IPFS
+gateway, fall back to a generated initials avatar, and can hide it per token.
+
 ---
 
 ## 0. Process

@@ -94,7 +94,7 @@ abstract contract ForkBase is Test {
 
     function _launch(address quote, uint256 circuitId) internal returns (LaunchToken t) {
         vm.prank(creator);
-        t = LaunchToken(pad.createLaunch(Addresses.NANDOUT, circuitId, "Circ Fork", "CF", quote, 0, 0));
+        t = LaunchToken(pad.createLaunch(Addresses.NANDOUT, circuitId, "Circ Fork", "CF", "", quote, 0, 0));
     }
 
     function _container(uint256 circuitId) internal view returns (address) {

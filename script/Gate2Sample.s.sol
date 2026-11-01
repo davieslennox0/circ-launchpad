@@ -40,7 +40,7 @@ contract Gate2Sample is Script {
         uint256 id = vm.envOr("CIRCUIT_ID", uint256(1));
         require(ICircuitNFT(Addresses.NANDOUT).ownerOf(id) == holder, "holder no longer owns the circuit");
         vm.startBroadcast(holder);
-        token = pad.createLaunch(Addresses.NANDOUT, id, "Circ Gate Two", "CGT", Addresses.WOKB, 0, 0);
+        token = pad.createLaunch(Addresses.NANDOUT, id, "Circ Gate Two", "CGT", "", Addresses.WOKB, 0, 0);
         vm.stopBroadcast();
         console2.log("TOKEN", token);
         (,,,,, address container,,,,) = pad.curves(token);
