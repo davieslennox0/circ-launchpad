@@ -72,6 +72,11 @@ and survives NFT transfers. `isLaunched(circuitNft, circuitId)` exposes it for f
 blocked an exact CREATE2 collision (same holder, name and ticker), so a Circuit could back several launches paying one
 Container. Production was redeployed with A8 before the first launch.
 
+**A9. Token logo URI (2026-11-01).** `createLaunch(circuitNft, circuitId, name, symbol, imageURI, quote, devBuyAmount,
+devBuyMinOut)`. `imageURI` (e.g. `ipfs://<CID>`) is at most `MAX_IMAGE_URI` = 256 bytes (`ImageURITooLong`), and is
+emitted in `LaunchCreated(..., creator, imageURI)`, never stored. Empty is allowed. Frontends load it through an IPFS
+gateway, fall back to a generated initials avatar, and can hide it per token.
+
 ---
 
 ## 0. Process

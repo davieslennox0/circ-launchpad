@@ -469,9 +469,9 @@ def main():
         # ------------------------------------------------------------------ 2. launch
         PHASE["name"] = "e2e"
         with Step(f"2. Launch CIRC-TEST from Nandout #{circuit_id}", [holder], toks):
-            r = send(holder, pad, "createLaunch(address,uint256,string,string,address,uint256,uint256)", NANDOUT,
-                     circuit_id, "CIRC-TEST", "CIRCTEST", WOKB, 0, 0, label="createLaunch")
-            t_launch = topic("LaunchCreated(address,address,address,uint256,address,address)")
+            r = send(holder, pad, "createLaunch(address,uint256,string,string,string,address,uint256,uint256)", NANDOUT,
+                     circuit_id, "CIRC-TEST", "CIRCTEST", "", WOKB, 0, 0, label="createLaunch")
+            t_launch = topic("LaunchCreated(address,address,address,uint256,address,address,string)")
             lg = next(tx_logs(r, pad, t_launch))
             token = addr_of_topic(lg["topics"][1])
             c = curve(pad, token)

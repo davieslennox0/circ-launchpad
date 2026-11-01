@@ -68,15 +68,20 @@ contract NandoutMintForkTest is ForkBase {
         assertFalse(pad.isLaunched(Addresses.NANDOUT, id));
         vm.recordLogs();
         vm.prank(user);
-        address token = pad.createLaunch(Addresses.NANDOUT, id, "Fresh Nand", "FNAND", Addresses.WOKB, 0, 0);
+        address token = pad.createLaunch(
+            Addresses.NANDOUT, id, "Fresh Nand", "FNAND", "ipfs://bafkreigh2akiscaildc", Addresses.WOKB, 0, 0
+        );
         assertTrue(pad.isLaunched(Addresses.NANDOUT, id), "isLaunched set");
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool found;
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter == address(pad) && logs[i].topics[0] == CurvePad.LaunchCreated.selector) {
                 assertEq(address(uint160(uint256(logs[i].topics[3]))), Addresses.NANDOUT);
-                (uint256 cid,,) = abi.decode(logs[i].data, (uint256, address, address));
+                (uint256 cid,, address who, string memory uri) =
+                    abi.decode(logs[i].data, (uint256, address, address, string));
                 assertEq(cid, id);
+                assertEq(who, user);
+                assertEq(uri, "ipfs://bafkreigh2akiscaildc", "imageURI emitted");
                 found = true;
             }
         }
@@ -94,32 +99,32 @@ contract NandoutMintForkTest is ForkBase {
         address b = makeAddr("holderB");
         uint256 id = _mintNand(a);
         vm.prank(a);
-        pad.createLaunch(Addresses.NANDOUT, id, "One", "ONE", Addresses.WOKB, 0, 0);
+        pad.createLaunch(Addresses.NANDOUT, id, "One", "ONE", "", Addresses.WOKB, 0, 0);
 
         // same holder: same name/ticker, different name/ticker, other quote asset
         vm.startPrank(a);
         vm.expectRevert(CurvePad.AlreadyLaunched.selector);
-        pad.createLaunch(Addresses.NANDOUT, id, "One", "ONE", Addresses.WOKB, 0, 0);
+        pad.createLaunch(Addresses.NANDOUT, id, "One", "ONE", "", Addresses.WOKB, 0, 0);
         vm.expectRevert(CurvePad.AlreadyLaunched.selector);
-        pad.createLaunch(Addresses.NANDOUT, id, "Two", "TWO", Addresses.WOKB, 0, 0);
+        pad.createLaunch(Addresses.NANDOUT, id, "Two", "TWO", "", Addresses.WOKB, 0, 0);
         vm.expectRevert(CurvePad.AlreadyLaunched.selector);
-        pad.createLaunch(Addresses.NANDOUT, id, "Two", "TWO", Addresses.BEM, 0, 0);
+        pad.createLaunch(Addresses.NANDOUT, id, "Two", "TWO", "", Addresses.BEM, 0, 0);
         nandout.transferFrom(a, b, id);
         vm.stopPrank();
 
         // new holder after transfer: same and different name/ticker
         vm.startPrank(b);
         vm.expectRevert(CurvePad.AlreadyLaunched.selector);
-        pad.createLaunch(Addresses.NANDOUT, id, "One", "ONE", Addresses.WOKB, 0, 0);
+        pad.createLaunch(Addresses.NANDOUT, id, "One", "ONE", "", Addresses.WOKB, 0, 0);
         vm.expectRevert(CurvePad.AlreadyLaunched.selector);
-        pad.createLaunch(Addresses.NANDOUT, id, "Three", "THREE", Addresses.WOKB, 0, 0);
+        pad.createLaunch(Addresses.NANDOUT, id, "Three", "THREE", "", Addresses.WOKB, 0, 0);
         vm.stopPrank();
         assertTrue(pad.isLaunched(Addresses.NANDOUT, id), "still launched after transfer");
 
         // a different Nand still launches
         uint256 id2 = _mintNand(b);
         vm.prank(b);
-        pad.createLaunch(Addresses.NANDOUT, id2, "Three", "THREE", Addresses.WOKB, 0, 0);
+        pad.createLaunch(Addresses.NANDOUT, id2, "Three", "THREE", "", Addresses.WOKB, 0, 0);
         assertTrue(pad.isLaunched(Addresses.NANDOUT, id2));
     }
 }
