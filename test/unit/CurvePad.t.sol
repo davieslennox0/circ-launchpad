@@ -101,7 +101,7 @@ contract CurvePadUnitTest is UnitBase {
         string memory uri = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
         vm.recordLogs();
         vm.prank(creator);
-        address t = pad.createLaunch(address(nft), 1, "Logo", "LOGO", "", uri, address(wokb), 0, 0);
+        address t = pad.createLaunch(address(nft), 1, "Logo", "LOGO", uri, address(wokb), 0, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool found;
         for (uint256 i; i < logs.length; ++i) {
@@ -125,10 +125,10 @@ contract CurvePadUnitTest is UnitBase {
         bytes memory over = bytes.concat(max, "a");
         vm.prank(creator);
         vm.expectRevert(CurvePad.ImageURITooLong.selector);
-        pad.createLaunch(address(nft), 1, "X", "X", "", string(over), address(wokb), 0, 0);
+        pad.createLaunch(address(nft), 1, "X", "X", string(over), address(wokb), 0, 0);
         assertFalse(pad.isLaunched(address(nft), 1), "rejected launch does not consume the circuit");
         vm.prank(creator);
-        pad.createLaunch(address(nft), 1, "X", "X", "", string(max), address(wokb), 0, 0);
+        pad.createLaunch(address(nft), 1, "X", "X", string(max), address(wokb), 0, 0);
         assertTrue(pad.isLaunched(address(nft), 1));
     }
 
