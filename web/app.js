@@ -40,6 +40,7 @@ const ABI = {
     "function TOTAL_SUPPLY() view returns (uint256)",
     "function tradeFeeBps() pure returns (uint256)", "function feeSplitBps() pure returns (uint256,uint256,uint256)",
     "function MAX_NAME_BYTES() view returns (uint256)", "function MAX_SYMBOL_BYTES() view returns (uint256)",
+    "error BadName()", "error BadSymbol()", "error ImageURITooLong()", "error AlreadyLaunched()", "error NotHolder()", "error Slippage()", "error EarlyBlockCapReached()", "error CurveClosed()",
     "function quoteConfig(address) view returns (tuple(uint128 vQuote0,uint128 vToken0,uint128 curveSupply,uint128 lpTokens))",
     "function curves(address) view returns (address quote,uint128 vQuote,uint128 vToken,uint128 realQuote,uint128 tokensLeft,address container,address circuitNft,uint256 circuitId,uint64 launchBlock,uint8 status)",
     "function earlyBlock(address) view returns (uint64 blockNumber,uint192 sold)",
@@ -157,6 +158,7 @@ async function loadPad() {
   // tradeFeeBps() / feeSplitBps() exist from v3 on; earlier pads charge the same 1% and 50/30/20.
   const feeBps = await pad.tradeFeeBps().catch(() => 100n);
   const split = await pad.feeSplitBps().catch(() => [5000n, 3000n, 2000n]);
+  const maxName = Number(await pad.MAX_NAME_BYTES().catch(() => 64n)), maxSymbol = Number(await pad.MAX_SYMBOL_BYTES().catch(() => 16n));
   const cfg = (c, dec, sym) => {
     const vQ0 = c.vQuote0, vT0 = c.vToken0, cs = c.curveSupply, lp = c.lpTokens, tEnd = vT0 - cs;
     const qEnd = (vQ0 * vT0) / tEnd;
@@ -168,7 +170,7 @@ async function loadPad() {
     };
   };
   state.pad = {
-    addr: inst.pad, contract: pad, feeBps, split: split.map(Number), graduator, wokb, bem, locker, hook, protocol, sink, registry, containerImpl, factory,
+    addr: inst.pad, contract: pad, feeBps, split: split.map(Number), maxName, maxSymbol, graduator, wokb, bem, locker, hook, protocol, sink, registry, containerImpl, factory,
     guard: Number(guard), maxEarly, total, totalTokens: units(total, 18),
     cfg: { [wokb.toLowerCase()]: cfg(cw, 18, "WOKB"), [bem.toLowerCase()]: cfg(cb, 8, "BEM") },
   };
@@ -244,24 +246,49 @@ async function readLaunch(L) {
 }
 
 // ---------------------------------------------------------------- wallet
+// EIP-6963: every installed wallet announces itself, so several wallets can coexist. window.ethereum is the fallback.
+const announced = new Map();
+window.addEventListener("eip6963:announceProvider", (e) => { if (e.detail?.info?.uuid) announced.set(e.detail.info.uuid, e.detail); });
+window.dispatchEvent(new Event("eip6963:requestProvider"));
+function chooseWallet() {
+  const list = [...announced.values()];
+  if (list.length === 1) return Promise.resolve(list[0].provider);
+  if (!list.length) return Promise.resolve(window.ethereum || null);
+  return new Promise((resolve) => {
+    const d = document.createElement("div"); d.className = "wallets";
+    const icon = (i) => /^data:image\//.test(i || "") ? `<img src="${esc(i)}" alt="">` : "";
+    d.innerHTML = `<div><h3>Choose a wallet</h3>${list.map((w, i) => `<button class="w" data-i="${i}">${icon(w.info.icon)}${esc(w.info.name)}</button>`).join("")}<button class="btn ghost block" data-x>Cancel</button></div>`;
+    d.onclick = (e) => {
+      const b = e.target.closest("button");
+      if (!b && e.target !== d) return;
+      d.remove();
+      resolve(b && b.dataset.i != null ? list[+b.dataset.i].provider : null);
+    };
+    document.body.appendChild(d);
+  });
+}
+function forget() { state.signer = null; state.account = null; $("#connect").textContent = "Connect"; }
+let walletProvider = null;
 async function connect() {
-  if (!window.ethereum) { toast("No wallet found. Install OKX Wallet or MetaMask."); return null; }
-  const bp = new E.BrowserProvider(window.ethereum);
-  await bp.send("eth_requestAccounts", []);
-  const net = await bp.getNetwork();
-  if (Number(net.chainId) !== CHAIN_ID) {
+  const eth = await chooseWallet();
+  if (!eth) { if (!announced.size && !window.ethereum) toast("No wallet found. Install OKX Wallet or MetaMask, or open this page in your wallet's browser."); return null; }
+  await eth.request({ method: "eth_requestAccounts" });
+  if (Number(await eth.request({ method: "eth_chainId" })) !== CHAIN_ID) {
     try {
-      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0xc4" }] });
+      await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0xc4" }] });
     } catch (e) {
-      if (e.code === 4902) {
-        await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{
-          chainId: "0xc4", chainName: "X Layer", nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
-          rpcUrls: [RPC], blockExplorerUrls: [EXPLORER] }] });
-      } else throw e;
+      if (e.code !== 4902) throw e;
+      await eth.request({ method: "wallet_addEthereumChain", params: [{
+        chainId: "0xc4", chainName: "X Layer", nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
+        rpcUrls: [RPC], blockExplorerUrls: [EXPLORER] }] });
     }
   }
-  const bp2 = new E.BrowserProvider(window.ethereum);
-  state.signer = await bp2.getSigner();
+  if (walletProvider !== eth && eth.on) {
+    eth.on("accountsChanged", () => { forget(); route(); });
+    eth.on("chainChanged", () => { forget(); toast("Network changed: reconnect on X Layer to continue."); route(); });
+  }
+  walletProvider = eth;
+  state.signer = await new E.BrowserProvider(eth).getSigner();
   state.account = await state.signer.getAddress();
   $("#connect").textContent = short(state.account);
   return state.signer;
@@ -724,6 +751,13 @@ function renderPoolTrade(box, L, grad) {
   };
 }
 
+// The contract counts bytes, not characters (limits read from CurvePad; pre-v3 pads have none, so 64/16 applies here too).
+function nameLimitError(name, sym) {
+  if (byteLength(name) > state.pad.maxName) return `Name is too long: ${byteLength(name)} of ${state.pad.maxName} bytes (emoji and non-Latin letters count as several)`;
+  if (byteLength(sym) > state.pad.maxSymbol) return `Ticker is too long: ${byteLength(sym)} of ${state.pad.maxSymbol} bytes`;
+  return null;
+}
+
 async function viewLaunchAdvanced() {
   const p = state.pad;
   const opt = (q) => { const c = p.cfg[q.toLowerCase()]; const u = quoteUsd(q); return { c, u }; };
@@ -739,8 +773,8 @@ async function viewLaunchAdvanced() {
       </div>
       <div id="circ-check" class="note">Enter a Circuit to check provenance and ownership on chain.</div>
       <div class="two">
-        <div class="field"><label>Token name</label><input id="name" placeholder="Circuit Token" maxlength="40"></div>
-        <div class="field"><label>Symbol</label><input id="sym" placeholder="CIRC" maxlength="10" style="text-transform:uppercase"></div>
+        <div class="field"><label>Token name</label><input id="name" placeholder="Circuit Token" maxlength="64"></div>
+        <div class="field"><label>Symbol</label><input id="sym" placeholder="CIRC" maxlength="16" style="text-transform:uppercase"></div>
       </div>
       <div class="field"><label>Quote asset</label><select id="quote">
         <option value="${p.wokb}">OKB / WOKB (default)</option><option value="${p.bem}">BEM · volatile quote</option></select></div>
@@ -778,6 +812,8 @@ async function viewLaunchAdvanced() {
     const nft = $("#nft").value.trim(), id = $("#cid").value.trim(), name = $("#name").value.trim(), sym = $("#sym").value.trim().toUpperCase();
     const q = $("#quote").value, dev = $("#dev").value.trim();
     if (!E.isAddress(nft) || !id || !name || !sym) { toast("Fill in Circuit, name and symbol"); return; }
+    const lim = nameLimitError(name, sym);
+    if (lim) { toast(lim); return; }
     const c = p.cfg[q.toLowerCase()];
     sendTx("Launch", async (s) => {
       const pad = C(p.addr, ABI.pad, s);
@@ -887,7 +923,7 @@ async function stepPick() {
     <div class="nands">${mintRow}${rows.map(rowHtml).join("")}</div>
     ${!state.account ? `<p class="muted" style="margin:14px 0">Connect your wallet to see the Nands you hold.</p>`
       : rows.length ? "" : `<p class="muted" style="margin:14px 0">You don't hold a Nand yet. Mint one above.</p>`}
-    <div class="pinned"><button class="btn hub block" id="cont" ${flow.sel ? "" : "disabled"}>${state.account ? "Continue" : "Connect wallet"}</button></div>
+    <div class="pinned"><button class="btn hub block" id="cont" ${flow.sel || !state.account ? "" : "disabled"}>${state.account ? "Continue" : "Connect wallet"}</button></div>
     <details class="adv"><summary>Advanced: launch from another TapeOut circuit</summary>
       <p class="muted" style="font-size:13px">Any TapeOut processor's circuit works if you hold it. <a href="#/launch/advanced">Open the manual circuit form →</a></p></details>`;
   list.querySelector(".nands").onclick = (e) => {
@@ -920,8 +956,8 @@ async function stepDetails() {
         <div><label class="btn" for="img">Choose image</label><input type="file" id="img" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
         <div class="muted" style="font-size:12px;margin-top:6px" id="imgstat">PNG, JPG, WebP or GIF, max 2 MB. Cropped to a square and pinned to IPFS.</div></div></div>
       <div class="two">
-        <div class="field"><label>Name</label><input id="name" maxlength="40" placeholder="My Token" value="${esc(flow.name)}"></div>
-        <div class="field"><label>Ticker</label><input id="sym" maxlength="10" placeholder="TICKER" style="text-transform:uppercase" value="${esc(flow.sym)}"></div>
+        <div class="field"><label>Name</label><input id="name" maxlength="64" placeholder="My Token" value="${esc(flow.name)}"></div>
+        <div class="field"><label>Ticker</label><input id="sym" maxlength="16" placeholder="TICKER" style="text-transform:uppercase" value="${esc(flow.sym)}"></div>
       </div>
       <div><div class="muted mono" style="font-size:11.5px;margin-bottom:6px">QUOTE</div><div class="qopts">
         <button class="qopt" data-q="${p.wokb}"><b>OKB</b><small>default · paid as WOKB</small></button>
@@ -965,8 +1001,8 @@ async function stepDetails() {
     if (flow.img && !flow.imageURI && !confirm("The logo hasn't finished uploading. Continue with the initials avatar?")) return;
     flow.name = $("#name").value.trim(); flow.sym = $("#sym").value.trim().toUpperCase(); flow.dev = $("#dev").value.trim();
     if (!flow.name || !flow.sym) { toast("Name and ticker are required"); return; }
-    if (byteLength(flow.name) > 64) { toast("Name is too long (64 bytes max)"); return; }
-    if (byteLength(flow.sym) > 16) { toast("Ticker is too long (16 bytes max)"); return; }
+    const lim = nameLimitError(flow.name, flow.sym);
+    if (lim) { toast(lim); return; }
     if (flow.dev && !(+flow.dev >= 0)) { toast("Dev buy must be a number"); return; }
     flow.step = 3; route();
   };
@@ -1148,5 +1184,4 @@ window.switchInst = (i) => { state.inst = i; localSet("circ.inst", i); booted = 
 document.querySelectorAll("#inst button").forEach((b) => b.onclick = () => window.switchInst(b.dataset.inst));
 $("#connect").onclick = () => connect().then(() => route()).catch((e) => toast(e.shortMessage || e.message));
 window.addEventListener("hashchange", () => { if (location.hash !== "#wafer") route(); });
-if (window.ethereum?.on) window.ethereum.on("accountsChanged", () => { state.signer = null; state.account = null; $("#connect").textContent = "Connect"; route(); });
 route();

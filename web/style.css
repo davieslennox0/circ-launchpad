@@ -282,7 +282,7 @@ footer a { color: var(--muted); text-decoration: none; }
 @media (max-width: 900px) {
   .hero, .wafer-wrap, .cols { grid-template-columns: 1fr; }
   .hero { padding-top: 36px; }
-  nav.links { display: none; }
+  header.top .wrap nav.links { display: none; }
   .row { grid-template-columns: 1.4fr 1fr auto; }
   .row .hide-m { display: none; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -361,3 +361,31 @@ details.adv summary { cursor: pointer; color: var(--muted); font: 13px var(--mon
 .sig.done .st { color: #5fd884; }
 .sig.err .dotk { border-color: var(--red); color: var(--red); }
 .sig.err .st { color: var(--red); }
+
+/* M7: author display rules must not defeat the hidden attribute */
+[hidden] { display: none !important; }
+
+/* H7: phones. Nav moves to its own row so every page is reachable, and nothing is wider than the screen. */
+nav.links.mobile { display: none; }
+html, body { overflow-x: clip; }
+@media (max-width: 900px) {
+  nav.links.mobile { display: flex; justify-content: space-around; margin: 0; padding: 4px 8px 6px; border-top: 1px solid var(--line); }
+  nav.links.mobile a { min-height: 44px; display: inline-flex; align-items: center; }
+  header.top .wrap { gap: 8px; }
+  .trace { margin-inline: 8px; }
+}
+@media (max-width: 520px) {
+  header.top .wrap { height: 56px; }
+  .brand small { display: none; }
+  .seg button { padding: 4px 8px; font-size: 11.5px; }
+  #connect { padding: 8px 12px; font-size: 13px; max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
+  .spec dl { grid-template-columns: minmax(0, 1fr) auto; }
+  .spec dd { overflow-wrap: anywhere; }
+  .cols > *, .card, .sheet { min-width: 0; }
+}
+/* M9: wallet chooser */
+.wallets { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.6); display: grid; place-items: center; padding: 16px; }
+.wallets > div { background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 18px; width: min(360px, 100%); }
+.wallets h3 { margin: 0 0 12px; color: var(--ink); font-size: 16px; }
+.wallets button.w { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-sm); cursor: pointer; margin-bottom: 8px; color: var(--ink); }
+.wallets button.w img { width: 28px; height: 28px; border-radius: 6px; }
