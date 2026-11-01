@@ -110,6 +110,30 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     await p.ev(`viewFloor()`);
     await sleep(100);
   }
+  check(`${label}: sort buttons and watchlist filter exist`, await p.ev(`document.querySelectorAll("[data-order]").length === 4 && !!document.querySelector('[data-filter="watch"]')`));
+  if (STAGING) {
+    await p.ev(`localStorage.removeItem("circ.watch")`);
+    await p.ev(`document.querySelector('[data-order="mc"]').click()`);
+    await sleep(100);
+    check(`${label}: sort applies and still shows tokens`, /DOUG/.test(await p.ev(text("#floor-view"))));
+    await p.ev(`document.querySelector('[data-order="new"]').click()`);
+    await sleep(100);
+    const opened = await p.ev(`(() => { const before = location.hash; document.querySelector("[data-star]").click(); return location.hash === before; })()`);
+    check(`${label}: starring doesn't open the token`, opened);
+    await p.ev(`document.querySelector('[data-filter="watch"]').click()`);
+    await sleep(100);
+    check(`${label}: watchlist shows only the starred token`, await p.ev(`document.querySelectorAll("#floor-view a.row").length === 1`));
+    check(`${label}: watchlist survives in this browser`, await p.ev(`JSON.parse(localStorage.getItem("circ.watch")).length === 1`));
+    await p.ev(`document.querySelector("#floor-view [data-star]").click()`);
+    await sleep(100);
+    check(`${label}: unstarring empties it, with a hint`, /watchlist is empty/.test(await p.ev(text("#floor-view"))));
+    await p.ev(`document.querySelector('[data-filter="all"]').click()`);
+    await sleep(100);
+    check(`${label}: latest-trades ticker shows real trades`, /BUY|SELL/.test(await p.ev(text("#ticker"))));
+    await p.ev(`window.dispatchEvent(new KeyboardEvent("x")); document.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true }))`);
+    check(`${label}: "/" focuses search`, await p.ev(`document.activeElement?.id === "floor-q"`));
+    await p.ev(`document.activeElement.blur()`);
+  }
   await p.ev(`confetti()`);
   check(`${label}: confetti runs`, await p.ev(`!!document.querySelector("#confetti")`));
   await sleep(700);
@@ -162,6 +186,18 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   check(`${label}: token page has the price chart`, await p.until(`!!document.querySelector("#price-chart polyline")`, 15000));
   const page = await p.ev(text("#app"));
   check(`${label}: token page has the bonding curve, without its removed text, wire or progress line`, /Bonding curve/.test(page) && !/x·y=k|Signal to the gate/.test(page) && !(await p.ev(`document.querySelector("#app .trace, svg.wire")`)));
+  const tp = await p.ev(text("#app"));
+  check(`${label}: token details and fee split read from the chain`, /Token details/.test(tp) && /Where the 1% fee goes/.test(tp) && /50%/.test(tp) && /30%/.test(tp) && /20%/.test(tp));
+  check(`${label}: contract address can be copied`, await p.ev(`document.querySelector(".copy-ca").dataset.copy.toLowerCase() === location.hash.slice(4).toLowerCase()`));
+  await p.ev(`scrollTo(0, 0)`);
+  await sleep(300);
+  check(`${label}: trade button visible only on a phone`, await p.ev(`getComputedStyle(document.querySelector(".trade-dock")).display`) === (label === "phone" ? "block" : "none"));
+  if (label === "phone") {
+    check(`${label}: trade button stays inside the screen`, await p.ev(`document.querySelector(".trade-dock").getBoundingClientRect().right <= innerWidth`));
+    await p.ev(`document.querySelector("#tradebox").scrollIntoView()`);
+    await sleep(300);
+    check(`${label}: trade button gets out of the way of the panel`, await p.ev(`getComputedStyle(document.querySelector(".trade-dock")).display`) === "none");
+  }
   await p.ev(`document.querySelector('[data-frame="5M"]').click()`);
   await sleep(100);
   check(`${label}: chart window switches`, (await p.ev(text("#price-chart"))).includes("in 5M"));

@@ -130,6 +130,21 @@ test("king of the hill: closest to tape-out, or hot volume on the way there", ()
   assert.equal(C.kingOfTheHill([{ ...near, status: 1 }, busy], now).L.status, 1); // complete, about to tape out
 });
 
+test("activity: last trade, heating up, and the latest trades", () => {
+  const now = 10000;
+  const quiet = { trades: [{ ts: 100, q: "1" }], prices: [[50, 1], [100, 1]], price: 1 };
+  const busy = { trades: [{ ts: 9900, q: "1" }, { ts: 9950, q: "2" }], prices: [[50, 1], [9950, 2]], price: 2 };
+  const swapped = { trades: [{ ts: 100, q: "1" }], prices: [[50, 1], [9990, 2]], price: 2 };
+  assert.equal(C.lastTradeTs(quiet), 100);
+  assert.equal(C.lastTradeTs(swapped), 9990);       // a Uniswap swap counts
+  assert.equal(C.lastTradeTs({ prices: [[50, 1]] }), 0); // only the launch price: nothing traded
+  assert.ok(C.heat(busy, now) > C.heat(quiet, now));
+  assert.equal(C.heat(quiet, now), 0);
+  const feed = C.recentActivity([quiet, busy], 2);
+  assert.deepEqual(feed.map((a) => a.t.ts), [9950, 9900]);
+  assert.equal(C.recentActivity([], 5).length, 0);
+});
+
 test("floor: sorting keeps rows without a value last", () => {
   const rows = [{ v: 1 }, { v: null }, { v: 3 }];
   assert.deepEqual(C.sortBy(rows, (r) => r.v, true).map((r) => r.v), [3, 1, null]);

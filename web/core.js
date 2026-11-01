@@ -206,6 +206,23 @@
     return best;
   }
 
-  return { kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
+  // Newest trade time, from the indexer's curve trades and price points. 0 when nothing has traded.
+  function lastTradeTs(L) {
+    const t = (L.trades || []).reduce((m, x) => Math.max(m, x.ts || 0), 0);
+    const pts = L.prices || [];
+    return Math.max(t, pts.length > 1 ? pts[pts.length - 1][0] : 0);
+  }
+  // Heating up: trades in the last hour, plus how much the price moved either way, so a busy token rises.
+  function heat(L, nowSec) {
+    const n = (L.trades || []).filter((t) => t.ts > nowSec - 3600).length;
+    const ch = priceChange(L.prices, nowSec, 3600, L.price);
+    return n + (ch === null ? 0 : Math.min(Math.abs(ch), 100) / 10);
+  }
+  // Latest curve trades across all tokens, newest first.
+  function recentActivity(list, limit) {
+    return list.flatMap((L) => (L.trades || []).map((t) => ({ L, t }))).sort((a, b) => b.t.ts - a.t.ts).slice(0, limit);
+  }
+
+  return { lastTradeTs, heat, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
     recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength };
 });
