@@ -2,7 +2,7 @@
 // POST multipart/form-data with field "file" -> pins to IPFS via Pinata -> { uri: "ipfs://<CID>", cid }.
 // The Pinata JWT lives only in the Vercel env (PINATA_JWT, Sensitive). It is never sent to the browser.
 
-const ALLOWED_ORIGINS = new Set(["https://pitchook.xyz", "https://www.pitchook.xyz"]);
+const ALLOWED_ORIGINS = new Set(["https://circ.getsarf.xyz"]);
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_DIM = 4096;
 const RATE = { windowMs: 10 * 60 * 1000, max: 10 }; // per IP per instance (best effort on serverless)
