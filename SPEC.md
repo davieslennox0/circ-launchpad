@@ -77,6 +77,12 @@ devBuyMinOut)`. `imageURI` (e.g. `ipfs://<CID>`) is at most `MAX_IMAGE_URI` = 25
 emitted in `LaunchCreated(..., creator, imageURI)`, never stored. Empty is allowed. Frontends load it through an IPFS
 gateway, fall back to a generated initials avatar, and can hide it per token.
 
+**A10. v3 (2026-11-01).** Name must be 1 to `MAX_NAME_BYTES` = 64 bytes (`BadName`) and symbol 1 to `MAX_SYMBOL_BYTES` = 16
+bytes (`BadSymbol`), checked before anything else in `createLaunch`, so a rejected launch never uses up the Circuit.
+`feeSplitBps()` on CurvePad and PositionLocker and `tradeFeeBps()` on CurvePad expose the fee constants so frontends need
+not hardcode them. Circ's own source is GPL-2.0-or-later (it compiles in GPL-2.0-or-later Uniswap code); vendored MIT files
+keep their upstream licence.
+
 ---
 
 ## 0. Process

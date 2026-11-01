@@ -48,8 +48,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install slither-analyzer==0.10.4
-      - name: Run Slither (report only; findings are triaged by hand)
-        run: slither . --filter-paths "lib/|test/|script/|src/libraries/uniswap/" --exclude-dependencies || true
+      - name: Run Slither (its exit code only says findings exist; the gate below decides)
+        run: slither . --filter-paths "lib/|test/|script/|src/libraries/uniswap/" --exclude-dependencies --json slither.json || true
+      - name: Fail on any finding not in the triaged baseline
+        run: python3 script/ci/slither_gate.py slither.json script/ci/slither_baseline.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: slither-report
+          path: slither.json
 
   deploy-dry-run:
     name: Deploy dry run (fork, no broadcast)

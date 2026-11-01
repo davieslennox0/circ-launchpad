@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.24;
 
 /// @notice X Layer mainnet (chain 196) addresses. Every entry was checked for code on 2026-10-29 (RECON.md).

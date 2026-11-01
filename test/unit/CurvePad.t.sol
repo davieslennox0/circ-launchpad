@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.24;
 
 import {Vm} from "forge-std/Test.sol";
@@ -130,6 +130,67 @@ contract CurvePadUnitTest is UnitBase {
         vm.prank(creator);
         pad.createLaunch(address(nft), 1, "X", "X", string(max), address(wokb), 0, 0);
         assertTrue(pad.isLaunched(address(nft), 1));
+    }
+
+    function _str(uint256 len) internal pure returns (string memory) {
+        bytes memory b = new bytes(len);
+        for (uint256 i; i < len; ++i) b[i] = "a";
+        return string(b);
+    }
+
+    function test_create_nameLimits() public {
+        vm.startPrank(creator);
+        vm.expectRevert(CurvePad.BadName.selector);
+        pad.createLaunch(address(nft), 1, "", "X", "", address(wokb), 0, 0);
+        uint256 max = pad.MAX_NAME_BYTES();
+        vm.expectRevert(CurvePad.BadName.selector);
+        pad.createLaunch(address(nft), 1, _str(max + 1), "X", "", address(wokb), 0, 0);
+        assertFalse(pad.isLaunched(address(nft), 1), "rejected launch does not consume the circuit");
+        LaunchToken t = LaunchToken(pad.createLaunch(address(nft), 1, _str(max), "X", "", address(wokb), 0, 0));
+        vm.stopPrank();
+        assertEq(bytes(t.name()).length, max);
+    }
+
+    function test_create_symbolLimits() public {
+        vm.startPrank(creator);
+        vm.expectRevert(CurvePad.BadSymbol.selector);
+        pad.createLaunch(address(nft), 1, "X", "", "", address(wokb), 0, 0);
+        uint256 max = pad.MAX_SYMBOL_BYTES();
+        vm.expectRevert(CurvePad.BadSymbol.selector);
+        pad.createLaunch(address(nft), 1, "X", _str(max + 1), "", address(wokb), 0, 0);
+        assertFalse(pad.isLaunched(address(nft), 1), "rejected launch does not consume the circuit");
+        LaunchToken t = LaunchToken(pad.createLaunch(address(nft), 1, "X", _str(max), "", address(wokb), 0, 0));
+        vm.stopPrank();
+        assertEq(bytes(t.symbol()).length, max);
+    }
+
+    function test_create_limitsCountBytesNotCharacters() public {
+        // 17 bytes but only 5 characters (four 4-byte emoji + one ASCII)
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.BadSymbol.selector);
+        pad.createLaunch(address(nft), 1, "X", unicode"🚀🚀🚀🚀a", "", address(wokb), 0, 0);
+    }
+
+    function test_feeViews_matchWhatIsCharged() public {
+        assertEq(pad.tradeFeeBps(), 100);
+        (uint256 c, uint256 p, uint256 s) = pad.feeSplitBps();
+        assertEq(c, 5_000);
+        assertEq(p, 3_000);
+        assertEq(s, 2_000);
+        assertEq(c + p + s, 10_000);
+        (uint256 lc, uint256 lp, uint256 ls) = locker.feeSplitBps();
+        assertEq(abi.encode(lc, lp, ls), abi.encode(c, p, s), "pad and locker split alike");
+
+        // The views describe the real accrual.
+        LaunchToken t = _launch(address(wokb));
+        _skipGuard();
+        vm.prank(alice);
+        pad.buy(address(t), 100 ether, 0, block.timestamp);
+        uint256 fee = 100 ether * pad.tradeFeeBps() / 10_000;
+        assertEq(pad.totalAccrued(address(wokb)), fee);
+        assertEq(pad.accrued(address(wokb), _container(1)), fee * c / 10_000);
+        assertEq(pad.accrued(address(wokb), protocol), fee * p / 10_000);
+        assertEq(pad.accrued(address(wokb), sink), fee * s / 10_000);
     }
 
     function test_create_emptyImageURIOk() public {

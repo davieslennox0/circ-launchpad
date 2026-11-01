@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -44,6 +44,11 @@ abstract contract FeeVault is ReentrancyGuard {
         if (protocol_ == address(0) || sink_ == address(0)) revert ZeroAddress();
         protocol = protocol_;
         sink = sink_;
+    }
+
+    /// @notice How every fee is split, in basis points of the fee. Rounding remainders go to the protocol.
+    function feeSplitBps() external pure returns (uint256 containerBps, uint256 protocolBps, uint256 sinkBps) {
+        return (CONTAINER_BPS, BPS - CONTAINER_BPS - SINK_BPS, SINK_BPS);
     }
 
     /// @notice Push accrued protocol or sink fees. Permissionless.
