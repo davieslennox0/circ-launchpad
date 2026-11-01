@@ -9,7 +9,8 @@ Reads use plain JSON-RPC (stdlib only, ~15 MB RSS). Only sends go through `cast`
   KEEPER_PASSWORD_FILE file holding the keystore password
   CIRC_PAD             CurvePad address
   START_BLOCK          first block to scan (the pad's deploy block)
-  RPC_URL              default https://rpc.xlayer.tech
+  RPC_URL              primary RPC; may hold an access token, so it is never logged or put on a command line
+  RPC_FALLBACK_URL     used when the primary fails or refuses old blocks (default https://rpc.xlayer.tech)
   STATE_FILE           default /var/lib/circ-keeper/state.json
   POLL_SECONDS         default 5
   MIN_BALANCE_WEI      warn below this keeper balance (default 0.002 OKB)
@@ -21,7 +22,9 @@ import sys
 import time
 import urllib.request
 
-RPC = os.environ.get("RPC_URL", "https://rpc.xlayer.tech")
+PUBLIC_RPC = "https://rpc.xlayer.tech"
+RPC = os.environ.get("RPC_URL", PUBLIC_RPC)
+RPCS = list(dict.fromkeys([RPC, os.environ.get("RPC_FALLBACK_URL", PUBLIC_RPC)]))
 PAD = os.environ.get("CIRC_PAD", "").lower()
 STATE_FILE = os.environ.get("STATE_FILE", "/var/lib/circ-keeper/state.json")
 POLL = int(os.environ.get("POLL_SECONDS", "5"))
@@ -41,18 +44,24 @@ def keeper_address():
     return subprocess.run(["cast", "wallet", "address", *signer_args()], capture_output=True, text=True, check=True).stdout.strip()
 
 
+def redact(text):
+    for i, url in enumerate(RPCS):
+        text = str(text).replace(url, f"<rpc{i}>")
+    return text
+
+
 def log(msg):
-    print(time.strftime("%Y-%m-%dT%H:%M:%SZ ", time.gmtime()) + msg, flush=True)
+    print(time.strftime("%Y-%m-%dT%H:%M:%SZ ", time.gmtime()) + redact(msg), flush=True)
 
 
 _id = 0
 
 
-def rpc(method, params):
+def rpc_at(url, method, params):
     global _id
     _id += 1
     body = json.dumps({"jsonrpc": "2.0", "id": _id, "method": method, "params": params}).encode()
-    req = urllib.request.Request(RPC, body, {"Content-Type": "application/json"})
+    req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=20) as r:
         res = json.load(r)
     if "error" in res:
@@ -60,6 +69,17 @@ def rpc(method, params):
     if res.get("result") is None:
         raise RuntimeError(f"{method}: null result")
     return res["result"]
+
+
+def rpc(method, params):
+    """Tries the primary, then the fallback. The primary's plan may refuse old blocks, which only matters after downtime."""
+    err = None
+    for url in RPCS:
+        try:
+            return rpc_at(url, method, params)
+        except Exception as e:  # network, HTTP or JSON-RPC error
+            err = e
+    raise RuntimeError(redact(err))
 
 
 def status(token):
@@ -86,8 +106,12 @@ def save_state(s):
 
 
 def graduate(token):
-    p = subprocess.run(["cast", "send", PAD, "graduate(address)", token, "--rpc-url", RPC, "--async", *signer_args()],
-                       capture_output=True, text=True)
+    p = None
+    for url in RPCS:  # the URL goes in the environment, never on the command line where `ps` could show it
+        p = subprocess.run(["cast", "send", PAD, "graduate(address)", token, "--async", *signer_args()],
+                           capture_output=True, text=True, env=dict(os.environ, ETH_RPC_URL=url))
+        if p.returncode == 0:
+            break
     if p.returncode != 0:
         log(f"graduate {token}: not sent: {p.stderr.strip()[-300:]}")
         return False
@@ -134,7 +158,7 @@ def tick(s):
 
 def main():
     keeper = keeper_address()
-    log(f"circ keeper up: pad {PAD}, keeper {keeper}, rpc {RPC}")
+    log(f"circ keeper up: pad {PAD}, keeper {keeper}, {len(RPCS)} rpc endpoint(s)")
     s = load_state()
     last_warn = 0
     while True:
