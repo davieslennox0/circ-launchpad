@@ -10,7 +10,7 @@ on:
 
 jobs:
   compare:
-    name: Recompile CurvePad v2 inputs vs deployed bytecode
+    name: Recompile CurvePad input vs deployed bytecode
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,8 +18,8 @@ jobs:
         run: |
           curl -sL -o solc https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux && chmod +x solc
           ./solc --version | tail -1
-      - name: Full input (control, Sourcify exact match)
-        run: python3 script/ci/compare_runtime.py ./solc docs/verification/CurvePad-v2.standard-input.json 0x071a1ff737415Ddc2085629D80B7C68741e17A18 https://rpc.xlayer.tech
+      - name: Full input of the production CurvePad
+        run: python3 script/ci/compare_runtime.py ./solc docs/verification/CurvePad-v3.standard-input.json 0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7 https://rpc.xlayer.tech
       - name: Candidate input (optional)
         if: ${{ inputs.candidate != '' }}
-        run: python3 script/ci/compare_runtime.py ./solc "${{ inputs.candidate }}" 0x071a1ff737415Ddc2085629D80B7C68741e17A18 https://rpc.xlayer.tech
+        run: python3 script/ci/compare_runtime.py ./solc "${{ inputs.candidate }}" 0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7 https://rpc.xlayer.tech

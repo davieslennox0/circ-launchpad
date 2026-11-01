@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -22,7 +22,6 @@ import {IPoolManager, IPositionManager, IAllowanceTransfer, IWOKB} from "./inter
 contract CurvePad is FeeVault {
     using SafeERC20 for IERC20;
     using SafeCast for uint256;
-    using SafeCast for int256;
 
     struct QuoteConfig {
         uint128 vQuote0;
@@ -77,6 +76,9 @@ contract CurvePad is FeeVault {
     uint256 public constant MAX_EARLY_BUY = TOTAL_SUPPLY / 200;
     /// @notice Max byte length of a launch's logo URI (e.g. ipfs://<CIDv1>). Emitted only, never stored.
     uint256 public constant MAX_IMAGE_URI = 256;
+    /// @notice Token name and symbol limits, in bytes. Both must be non-empty.
+    uint256 public constant MAX_NAME_BYTES = 64;
+    uint256 public constant MAX_SYMBOL_BYTES = 16;
 
     address public immutable wokb;
     address public immutable bem;
@@ -145,6 +147,8 @@ contract CurvePad is FeeVault {
     error NotTapeOut();
     error AlreadyLaunched();
     error ImageURITooLong();
+    error BadName();
+    error BadSymbol();
     error UnknownLaunch();
     error CurveClosed();
     error EarlyBlockCapReached();
@@ -220,6 +224,8 @@ contract CurvePad is FeeVault {
         uint256 devBuyAmount,
         uint256 devBuyMinOut
     ) external payable nonReentrant returns (address token) {
+        if (bytes(name).length == 0 || bytes(name).length > MAX_NAME_BYTES) revert BadName();
+        if (bytes(symbol).length == 0 || bytes(symbol).length > MAX_SYMBOL_BYTES) revert BadSymbol();
         if (bytes(imageURI).length > MAX_IMAGE_URI) revert ImageURITooLong();
         token = _deployLaunch(circuitNft, circuitId, name, symbol, imageURI, quote);
 
@@ -340,6 +346,11 @@ contract CurvePad is FeeVault {
     /// @notice True once a token has been launched from this Circuit (permanent; one launch per Circuit).
     function isLaunched(address circuitNft, uint256 circuitId) external view returns (bool) {
         return _launched[circuitNft][circuitId];
+    }
+
+    /// @notice Trade fee on quote, in basis points, charged on buys and sells. Split per `feeSplitBps`.
+    function tradeFeeBps() external pure returns (uint256) {
+        return CurveMath.FEE_BPS;
     }
 
     function quoteConfig(address quote) public view returns (QuoteConfig memory) {
