@@ -190,6 +190,22 @@
     }).join(" ");
   }
 
-  return { floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
+  // King of the hill: one token not yet on Uniswap, picked on curve progress plus the last hour's curve volume.
+  // volume is the hour's volume as a share of the raise: trading a full raise in an hour counts as 50 points of progress.
+  function kingOfTheHill(list, nowSec) {
+    let best = null;
+    for (const L of list) {
+      if (L.status === 2) continue;
+      const raise = Number(L.cfg?.raise || 0);
+      const volume = raise > 0 ? (L.trades || []).filter((t) => t.ts > nowSec - 3600).reduce((sum, t) => sum + Number(t.q), 0) / raise : 0;
+      const progress = L.status ? 100 : L.progress;
+      if (progress < 1 && volume === 0) continue; // a fresh launch nobody has traded isn't on the hill
+      const score = progress + Math.min(volume, 1) * 50;
+      if (!best || score > best.score || (score === best.score && L.block > best.L.block)) best = { L, score, volume };
+    }
+    return best;
+  }
+
+  return { kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
     recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength };
 });

@@ -440,21 +440,12 @@ a.f-row:hover { background: var(--s1); }
 .b-col h3 { margin: 0; font-size: 15px; }
 .b-col > p { margin: 0; font-size: 12.5px; }
 .b-card { display: flex; flex-direction: column; gap: 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; text-decoration: none; color: inherit; }
-.b-card:hover, .g-card:hover, .g-mini:hover { border-color: var(--line-strong); }
-.b-nums, .g-name, .g-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.b-card:hover { border-color: var(--line-strong); }
+.b-nums { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .b-none { padding: 14px 2px; font-size: 13px; }
 
 .g-sec { margin: 22px 0 10px; font-size: 15px; }
 .g-sec:first-child { margin-top: 0; }
-.g-strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; }
-.g-mini { flex: none; display: flex; gap: 10px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; text-decoration: none; color: inherit; }
-.g-mini small { display: block; }
-.g-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; margin-top: 14px; }
-.g-card { display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; text-decoration: none; color: inherit; }
-.av.g-logo { width: 100%; height: auto; aspect-ratio: 1.6; border-radius: 0; font-size: 34px; background: var(--panel-2) !important; }
-.av.g-logo img { object-fit: contain; }
-.g-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 8px; }
-.g-name b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .race-head h3 { margin: 0 0 4px; font-size: 18px; }
 .race-head p { margin: 0 0 14px; }
@@ -474,17 +465,6 @@ a.f-row:hover { background: var(--s1); }
 .p-chart.up polyline { stroke: var(--green); }
 .p-chart.down polyline { stroke: var(--red); }
 #price-chart h3 small { font: 12px var(--mono); margin-left: 6px; }
-svg.wire { display: block; width: 100%; max-width: 420px; height: auto; }
-.wire line { stroke-width: 3; stroke-linecap: round; }
-.w-off { stroke: var(--line-strong); }
-.w-on { stroke: var(--hub); }
-.w-dot { fill: var(--hub); }
-.w-gate { fill: none; stroke: var(--hub); stroke-width: 1.6; }
-.w-not { fill: var(--bg); stroke: var(--hub); stroke-width: 1.6; }
-.wire .w-out { stroke: var(--line-strong); stroke-width: 2; }
-.wire.done .w-gate { fill: var(--green); stroke: var(--green); }
-.wire.done .w-not { stroke: var(--green); }
-.wire.done .w-out { stroke: var(--green); }
 
 @media (max-width: 760px) {
   .f-row { grid-template-columns: minmax(0, 1fr) 72px 56px 56px; }
@@ -496,4 +476,18 @@ svg.wire { display: block; width: 100%; max-width: 420px; height: auto; }
   .b-col { display: none; }
   .b-col.on { display: flex; }
   .lane { grid-template-columns: 62px minmax(0, 1fr) 62px; gap: 8px; padding: 10px; }
+}
+
+/* King of the hill */
+.king { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center; background: var(--panel); border: 1px solid rgba(201,154,78,.45); border-radius: 14px; padding: 14px 16px; margin: 6px 0 12px; text-decoration: none; color: inherit; }
+a.king:hover { border-color: var(--amber); }
+.king.empty { display: flex; flex-wrap: wrap; gap: 6px 12px; border-color: var(--line); font-size: 13px; }
+.king .av { width: 56px; height: 56px; border-radius: 12px; }
+.king-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.king-tag { font: 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--amber); }
+.king-main b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.king-nums { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+@media (max-width: 600px) {
+  .king { grid-template-columns: auto minmax(0, 1fr); }
+  .king-nums { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; }
 }

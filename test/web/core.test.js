@@ -113,6 +113,23 @@ test("floor: stages, search and filters", () => {
   assert.deepEqual(C.filterLaunches(all, "doug", "near"), []);
 });
 
+test("king of the hill: closest to tape-out, or hot volume on the way there", () => {
+  const cfg = { raise: 1000n };
+  const now = 10000, hot = [{ ts: 9900, q: "1000" }], old = [{ ts: 100, q: "99999" }];
+  const near = { status: 0, progress: 80, cfg, trades: [], block: 1 };
+  const busy = { status: 0, progress: 40, cfg, trades: hot, block: 2 };
+  const uni = { status: 2, progress: 100, cfg, trades: hot, block: 3 };
+  const stale = { status: 0, progress: 60, cfg, trades: old, block: 4 };
+  const fresh = { status: 0, progress: 0, cfg, trades: [], block: 5 };
+  assert.equal(C.kingOfTheHill([near, stale], now).L, near);             // volume outside the hour doesn't count
+  assert.equal(C.kingOfTheHill([stale, busy], now).L, busy); // 40 + 50 beats 60
+  assert.equal(C.kingOfTheHill([near, busy], now).L, busy);              // 90 beats 80
+  assert.equal(C.kingOfTheHill([uni], now), null);                       // on Uniswap: off the hill
+  assert.equal(C.kingOfTheHill([fresh], now), null);                     // untraded launch
+  assert.equal(C.kingOfTheHill([], now), null);
+  assert.equal(C.kingOfTheHill([{ ...near, status: 1 }, busy], now).L.status, 1); // complete, about to tape out
+});
+
 test("floor: sorting keeps rows without a value last", () => {
   const rows = [{ v: 1 }, { v: null }, { v: 3 }];
   assert.deepEqual(C.sortBy(rows, (r) => r.v, true).map((r) => r.v), [3, 1, null]);

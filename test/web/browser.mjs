@@ -72,7 +72,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     check(`${label}: a dumped token shows a red change`, await p.ev(`document.querySelectorAll("a.row .chg.down").length > 0`), await p.ev(`[...document.querySelectorAll("a.row")].map((r) => [...r.querySelectorAll(".chg")].map((c) => c.innerText).join(" ")).join(" | ")`));
   }
   if (STAGING) {
-    for (const v of ["table", "board", "gallery", "race"]) {
+    for (const v of ["table", "board", "race"]) {
       await p.ev(`document.querySelector('[data-view="${v}"]').click()`);
       await sleep(150);
       check(`${label}: ${v} view shows real tokens`, /DOUG/.test(await p.ev(text("#floor-view"))));
@@ -97,6 +97,17 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     await sleep(100);
     check(`${label}: filter applies`, !/DOUG/.test(await p.ev(text("#floor-view"))));
     await p.ev(`document.querySelector('[data-filter="all"]').click()`);
+    await sleep(100);
+  }
+  check(`${label}: no gallery button`, !(await p.ev(`document.querySelector('[data-view="gallery"]')`)));
+  check(`${label}: king of the hill is on the floor`, /King of the hill/i.test(await p.ev(text("#app"))));
+  if (STAGING) { // every TEST token is on Uniswap, so draw the card with one put back on the curve, in this page only
+    const crowned = await p.ev(`(() => { const x = state.launches[0]; x.status = 0; x.progress = 72; document.querySelector("#app .king").outerHTML = kingCard(); return document.querySelector("a.king b").innerText; })()`);
+    check(`${label}: king card shows a token on the curve`, crowned.length > 0, crowned);
+    await p.ev(`document.querySelector(".king").scrollIntoView({ block: "center" })`);
+    await sleep(150);
+    await p.shot(`${label}-king`);
+    await p.ev(`viewFloor()`);
     await sleep(100);
   }
   await p.ev(`confetti()`);
@@ -148,7 +159,9 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   check(`${label}: pool quote works through the Quoter`, await p.until(`${text("#pv")}.includes("Minimum")`, 30000), (await p.ev(text("#pv"))).replace(/\n/g, " ").slice(0, 80));
   const logo = await p.until(`(() => { const i = document.querySelector(".tp-head .av img"); return i && i.complete && i.naturalWidth > 0; })()`, 40000);
   console.log(`${logo ? "PASS" : "INFO"}  ${label}: IPFS logo ${logo ? "loaded" : "didn't load from the gateways from this server (initials shown)"}`);
-  check(`${label}: token page has the price chart and signal wire`, await p.until(`!!document.querySelector("#price-chart polyline") && !!document.querySelector("svg.wire")`, 15000));
+  check(`${label}: token page has the price chart`, await p.until(`!!document.querySelector("#price-chart polyline")`, 15000));
+  const page = await p.ev(text("#app"));
+  check(`${label}: token page has the bonding curve, without its removed text, wire or progress line`, /Bonding curve/.test(page) && !/x·y=k|Signal to the gate/.test(page) && !(await p.ev(`document.querySelector("#app .trace, svg.wire")`)));
   await p.ev(`document.querySelector('[data-frame="5M"]').click()`);
   await sleep(100);
   check(`${label}: chart window switches`, (await p.ev(text("#price-chart"))).includes("in 5M"));
