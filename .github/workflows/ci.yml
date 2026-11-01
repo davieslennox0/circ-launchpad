@@ -200,15 +200,14 @@ jobs:
           anvil --fork-url "$XLAYER_RPC_URL" --port 8545 --auto-impersonate --silent > anvil.log 2>&1 &
           for i in $(seq 1 60); do cast block-number --rpc-url $E2E_RPC >/dev/null 2>&1 && break; sleep 2; done
           echo "chain id $(cast chain-id --rpc-url $E2E_RPC), fork block $(cast block-number --rpc-url $E2E_RPC)"
-      - name: Throwaway fork keys, funded exactly as asked of the owner (0.01 / 0.09 / 0.13 OKB)
+      - name: Throwaway fork keys, funded like the live run (deployer 0.01, keeper 0.05, buyer 0.2 OKB)
         run: |
           for n in DEPLOYER KEEPER BUYER; do K=0x$(openssl rand -hex 32); echo "::add-mask::$K"; echo "${n}_KEY=$K" >> $GITHUB_ENV; done
       - name: Fund
         run: |
           cast rpc anvil_setBalance $(cast wallet address $DEPLOYER_KEY) $(cast to-hex 10000000000000000) --rpc-url $E2E_RPC
-          cast rpc anvil_setBalance $(cast wallet address $KEEPER_KEY) $(cast to-hex 90000000000000000) --rpc-url $E2E_RPC
-          cast rpc anvil_setBalance $(cast wallet address $BUYER_KEY) $(cast to-hex 130000000000000000) --rpc-url $E2E_RPC
-          echo "Nandout holder keeps its real fork balance: $(cast balance --ether 0x934d315C0a9C0866D393B722C1805F2B6b20b816 --rpc-url $E2E_RPC) OKB"
+          cast rpc anvil_setBalance $(cast wallet address $KEEPER_KEY) $(cast to-hex 50000000000000000) --rpc-url $E2E_RPC
+          cast rpc anvil_setBalance $(cast wallet address $BUYER_KEY) $(cast to-hex 200000000000000000) --rpc-url $E2E_RPC
       - name: Run the E2E driver
         run: python3 -I script/e2e/e2e.py
       - uses: actions/upload-artifact@v4

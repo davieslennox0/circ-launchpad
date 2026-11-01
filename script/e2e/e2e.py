@@ -5,10 +5,10 @@ Drives the full launch lifecycle with `cast`, one transaction at a time, printin
 balances before/after and PASS/FAIL, and writing the same log to docs/E2E_RESULTS.md.
 
 Keys are read from the environment only (load /root/circ/.env first) and are never printed or logged:
-  DEPLOYER_KEY, KEEPER_KEY, BUYER_KEY, NANDOUT_KEY (Nandout holder; not needed with E2E_FORK=1)
+  DEPLOYER_KEY, KEEPER_KEY, BUYER_KEY. The buyer mints its own Nand, so no other wallet's key is needed.
 Addresses: MAIN_WALLET (sweep target), CIRC_PROTOCOL, CIRC_SINK (fee recipients, must differ).
-Optional: E2E_RPC (default https://rpc.xlayer.tech), E2E_FORK=1 (anvil fork: holder impersonated, blocks mined),
-          CIRCUIT_ID (default 2), E2E_PAD (skip deploy and reuse a CIRC-TEST pad).
+Optional: E2E_RPC (default https://rpc.xlayer.tech), E2E_FORK=1 (anvil fork: blocks mined),
+          E2E_PAD (skip deploy and reuse a CIRC-TEST pad), E2E_LOG (log file, default docs/E2E_RESULTS.md).
 
 Safety: refuses to send more than CAP_WEI (0.5 OKB) of msg.value in total across all wallets (gas excluded; sweeps to
 MAIN_WALLET excluded), and stops on the first unexpected revert or failed check.
@@ -24,7 +24,7 @@ from decimal import Decimal, getcontext
 getcontext().prec = 80
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LOG_PATH = os.path.join(ROOT, "docs", "E2E_RESULTS.md")
+LOG_PATH = os.path.join(ROOT, os.environ.get("E2E_LOG", "docs/E2E_RESULTS.md"))
 
 CAP_WEI = 5 * 10**17  # 0.5 OKB hard cap on msg.value across all wallets
 E18 = 10**18
@@ -37,7 +37,8 @@ STATE_VIEW = "0x76Fd297e2D437cd7f76d50F01AfE6160f86e9990"
 QUOTER = "0x8928074CA1b241D8Ec02815881c1Af11E8bC5219"
 UR = "0x1cd182C94fcF42277B80DBB9060F88024809E61E"
 NANDOUT = "0x8A60B4A4BCf4066F5E5F9A406fE09c5e4f52a58E"
-NANDOUT_HOLDER = "0x934d315C0a9C0866D393B722C1805F2B6b20b816"
+ONE_NAND = "0x00000002000003"  # one NAND gate: NAND(in0, in1), nIn=2, nOut=1
+TEST_LOGO = "ipfs://bafkreifgwgniocoza3oetpvyllyxb2tlbnvn7sgywmnbwxcb4tcnkc6qsu"  # the throwaway logo pinned on 2026-11-01
 OPENER = "0x536adD8F30f03b69f6fbF29d425A816A0dC50106"
 REGISTRY = "0x000000006551c19487814612e58FE06813775758"
 CONTAINER_IMPL = "0xAC4F791353eE9F06e2C50Ae4C34680D28Ea52a57"
@@ -389,41 +390,36 @@ def main():
     deployer = Wallet("deployer", "DEPLOYER_KEY")
     keeper = Wallet("keeper", "KEEPER_KEY")
     buyer = Wallet("buyer", "BUYER_KEY")
-    holder = Wallet("nandout", None, impersonate=NANDOUT_HOLDER) if FORK else Wallet("nandout", "NANDOUT_KEY")
+    holder = buyer  # the test wallet mints and holds its own Nand: the real new-user path
     main_wallet = os.environ.get("MAIN_WALLET", "")
     protocol = os.environ.get("CIRC_PROTOCOL", "")
     sink = os.environ.get("CIRC_SINK", "")
     for n, a in (("MAIN_WALLET", main_wallet), ("CIRC_PROTOCOL", protocol), ("CIRC_SINK", sink)):
         if not re.fullmatch(r"0x[0-9a-fA-F]{40}", a):
             raise Abort(f"{n} missing or malformed in .env")
-    circuit_id = int(os.environ.get("CIRCUIT_ID", "2"))
+    circuit_id = int(os.environ.get("E2E_CIRCUIT_ID", "0"))  # set only when resuming; otherwise minted in step 2
     ours = [deployer, keeper, buyer]
 
     if not RESUME or RESUME == "0":
         # ------------------------------------------------------------------ 0. preflight
         PHASE["name"] = "preflight"
         with Step("0. Preflight", [deployer, keeper, buyer, holder], []):
-            if holder.addr.lower() != NANDOUT_HOLDER.lower():
-                out(f"  note: NANDOUT_KEY is {holder.addr}, not the known holder {NANDOUT_HOLDER}")
-            addrs = {w.addr.lower() for w in ours + [holder]}
-            check("preflight", len(addrs) == 4, "deployer, keeper, buyer and Nandout wallet are four distinct addresses")
+            addrs = {w.addr.lower() for w in ours}
+            check("preflight", len(addrs) == 3, "deployer, keeper and buyer are three distinct addresses")
             check("preflight", protocol.lower() != sink.lower(), "CIRC_PROTOCOL and CIRC_SINK differ (needed for the split check)")
-            owner = call(NANDOUT, "ownerOf(uint256)(address)", circuit_id)[0]
-            check("preflight", owner.lower() == holder.addr.lower(), f"Nandout #{circuit_id} is held by the Nandout wallet")
-            container = call(REGISTRY, "account(address,bytes32,uint256,address,uint256)(address)", CONTAINER_IMPL,
-                             "0x" + "00" * 32, 196, NANDOUT, circuit_id)[0]
-            opened = len(cast("code", container, "--rpc-url", RPC)) > 2
+            opened = False  # a freshly minted Nand's Container is never open
             open_fee = call_int(OPENER, "FEE()(uint256)")
             gp = gas_price()
-            out(f"  - Nandout #{circuit_id} Container {container}: {'already opened' if opened else 'not opened yet'}; "
-                f"open fee {okb(open_fee)} OKB; gas price {gp / 1e9:.4f} gwei")
+            t_addr = call(NANDOUT, "transistors()(address)")[0]
+            mint_cost = call_int(t_addr, "mintPrice()(uint256)") + call_int(t_addr, "protocolFee()(uint256)") + call_int(NANDOUT, "TAPEOUT_FEE()(uint256)")
+            out(f"  - new Nand costs {okb(mint_cost)} OKB; Container open fee {okb(open_fee)} OKB; gas price {gp / 1e9:.4f} gwei")
             # Cost estimate (gas from the anvil-fork rehearsal, script/e2e/README.md).
             deploy_gas, e2e_gas = 8_600_000, 4_500_000
             out(f"  - estimate: TEST deploy {okb(deploy_gas * gp)} OKB gas; e2e run {okb(e2e_gas * gp)} OKB gas "
-                f"+ ~0.19 OKB value (fill ~0.1, Container open {okb(0 if opened else open_fee)}, withdraw fee 0.0013); "
+                f"+ ~0.19 OKB value (fill ~0.1, Nand {okb(mint_cost)}, Container open {okb(open_fee)}, withdraw fee 0.0013); "
                 f"prod deploy {okb(deploy_gas * gp)} OKB gas")
-            for w, need in ((deployer, 3 * 10**15), (keeper, (0 if opened else open_fee) + 3 * 10**15),
-                            (buyer, 108 * 10**15), (holder, 2 * 10**15)):
+            # The keeper only needs gas. The buyer pays the fill, the Nand, the Container open and the withdraw fee.
+            for w, need in ((deployer, 3 * 10**15), (keeper, 10**15), (buyer, 108 * 10**15 + mint_cost + open_fee + 2 * 10**15)):
                 check("preflight", native(w.addr) >= need, f"{w.name} {w.addr} holds >= {okb(need)} OKB")
 
         # ------------------------------------------------------------------ 1. deploy
@@ -468,11 +464,34 @@ def main():
 
         # ------------------------------------------------------------------ 2. launch
         PHASE["name"] = "e2e"
-        with Step(f"2. Launch CIRC-TEST from Nandout #{circuit_id}", [holder], toks):
-            r = send(holder, pad, "createLaunch(address,uint256,string,string,string,address,uint256,uint256)", NANDOUT,
-                     circuit_id, "CIRC-TEST", "CIRCTEST", "", WOKB, 0, 0, label="createLaunch")
+        with Step("2a. Mint a new Nand (buy 1 NAND transistor, tape out)", [buyer], []):
+            last = call_int(NANDOUT, "nextId()(uint256)")
+            send(buyer, t_addr, "mint(uint256,uint256)", 0, 1, value=mint_cost - call_int(NANDOUT, "TAPEOUT_FEE()(uint256)"), label="buy NAND transistor")
+            r = send(buyer, NANDOUT, "tapeout(bytes,uint32,uint32)", ONE_NAND, 2, 1, value=call_int(NANDOUT, "TAPEOUT_FEE()(uint256)"), label="tape out")
+            lg = next(tx_logs(r, NANDOUT, topic("TapedOut(uint256,address,uint32,uint32)")))
+            circuit_id = int(lg["topics"][1], 16)
+            check("mint", circuit_id == last + 1, f"nextId() was the last id ({last}); the new Nand is #{circuit_id}")
+            check("mint", call(NANDOUT, "ownerOf(uint256)(address)", circuit_id)[0].lower() == buyer.addr.lower(), "the buyer holds it")
+        sig = "createLaunch(address,uint256,string,string,string,address,uint256,uint256)"
+        with Step("2b. Launch limits (simulated, nothing sent)", [], []):
+            err = call_reverts(pad, sig, NANDOUT, circuit_id, "", "X", "", WOKB, 0, 0, frm=holder.addr)
+            check("limits", reverted_with(err, "BadName()"), "empty name reverts BadName")
+            err = call_reverts(pad, sig, NANDOUT, circuit_id, "x" * 65, "X", "", WOKB, 0, 0, frm=holder.addr)
+            check("limits", reverted_with(err, "BadName()"), "65-byte name reverts BadName")
+            err = call_reverts(pad, sig, NANDOUT, circuit_id, "X", "x" * 17, "", WOKB, 0, 0, frm=holder.addr)
+            check("limits", reverted_with(err, "BadSymbol()"), "17-byte symbol reverts BadSymbol")
+            bps = call_int(pad, "tradeFeeBps()(uint256)")
+            split = [int(x) for x in call(pad, "feeSplitBps()(uint256,uint256,uint256)")]
+            check("views", bps == 100 and split == [5000, 3000, 2000], f"tradeFeeBps {bps}, feeSplitBps {split}")
+        with Step(f"2c. Launch CIRC-TEST from Nand #{circuit_id}", [holder], toks):
+            check("launch", call(pad, "isLaunched(address,uint256)(bool)", NANDOUT, circuit_id)[0] == "false", "isLaunched is false before")
+            r = send(holder, pad, sig, NANDOUT, circuit_id, "CIRC-TEST", "CIRCTEST", TEST_LOGO, WOKB, 0, 0, label="createLaunch")
+            check("launch", call(pad, "isLaunched(address,uint256)(bool)", NANDOUT, circuit_id)[0] == "true", "isLaunched is true after")
+            err = call_reverts(pad, sig, NANDOUT, circuit_id, "Again", "AGAIN", "", WOKB, 0, 0, frm=holder.addr)
+            check("launch", reverted_with(err, "AlreadyLaunched()"), "a second launch from this Nand reverts AlreadyLaunched")
             t_launch = topic("LaunchCreated(address,address,address,uint256,address,address,string)")
             lg = next(tx_logs(r, pad, t_launch))
+            check("launch", TEST_LOGO.encode().hex() in lg["data"], "imageURI is emitted in LaunchCreated")
             token = addr_of_topic(lg["topics"][1])
             c = curve(pad, token)
             container = c["container"]
@@ -658,10 +677,10 @@ def main():
         check("claim", reverted_with(err, "NotHolder()"), "non-holder claimCreator reverts NotHolder")
 
     # ------------------------------------------------------------------ 10. Container open + withdraw
-    with Step("10. Container open + creator claim to Container + holder withdraw", [keeper, holder], toks):
+    with Step("10. Container open + creator claim to Container + holder withdraw", [holder], toks):
         if len(cast("code", container, "--rpc-url", RPC)) <= 2:
             open_fee = call_int(OPENER, "FEE()(uint256)")
-            send(keeper, OPENER, "open(address,uint256)", NANDOUT, circuit_id, value=open_fee,
+            send(holder, OPENER, "open(address,uint256)", NANDOUT, circuit_id, value=open_fee,
                  label=f"TapeOut opener.open (fee {okb(open_fee)} OKB)")
             check("container", len(cast("code", container, "--rpc-url", RPC)) > 2, f"Container {container} deployed")
         else:
@@ -694,19 +713,20 @@ def main():
 
     # ------------------------------------------------------------------ 12. cleanup
     PHASE["name"] = "cleanup"
-    with Step("12. Cleanup: sell all CIRCTEST back into the pool, unwrap, sweep to MAIN_WALLET",
-              [buyer, keeper, holder], toks):
-        for w in (buyer, keeper, holder):
+    with Step("12. Cleanup: sell all CIRCTEST back into the pool, unwrap, sweep the buyer to MAIN_WALLET",
+              [buyer], toks):
+        for w in (buyer,):
             bal = erc20(token, w.addr)
             if bal > 0 and quote_exact_in(key[2], token.lower() == key[0].lower(), bal) > 0:
                 ur_swap(w, key, token, WOKB, bal, slippage_bps=300)
                 check("cleanup", erc20(token, w.addr) == 0, f"{w.name} holds no CIRCTEST")
-        for w in (buyer, keeper):
+        # The keeper is also the production keeper, so it is left alone.
+        for w in (buyer,):
             wb = erc20(WOKB, w.addr)
             if wb:
                 send(w, WOKB, "withdraw(uint256)", wb, label="unwrap WOKB")
         gp = gas_price()
-        for w in (buyer, keeper):
+        for w in (buyer,):
             margin = 10**12
             for _ in range(4):
                 bal = native(w.addr)
