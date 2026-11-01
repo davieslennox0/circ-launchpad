@@ -1,0 +1,9 @@
+{
+  "name": "circ-pin",
+  "private": true,
+  "description": "Circ Launchpad logo pinning endpoint (Vercel Function). PINATA_JWT lives only in Vercel env.",
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module"
+}
