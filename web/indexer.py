@@ -6,14 +6,17 @@ block. This process scans CurvePad logs (LaunchCreated, Trade, CurveCompleted, G
 JSON file per instance. It holds no keys and sends no transactions. The site treats it only as a hint: every number it
 shows is re-read from the chain, and it scans forward from `scannedTo` itself.
 
-Env: OUT_DIR (default /srv/circ-web/data), RPC_URL, POLL_SECONDS. Instances are fixed below.
+Env: OUT_DIR (default /srv/circ-web/data), RPC_URL, RPC_FALLBACK_URL, POLL_SECONDS. Instances are fixed below.
+RPC_URL may hold an access token, so it is never logged. The fallback (default: public RPC) covers outages and old blocks,
+which a private plan may refuse. The website doesn't use these: visitors' browsers talk to the public RPC themselves.
 """
 import json
 import os
 import time
 import urllib.request
 
-RPC = os.environ.get("RPC_URL", "https://rpc.xlayer.tech")
+PUBLIC_RPC = "https://rpc.xlayer.tech"
+RPCS = list(dict.fromkeys([os.environ.get("RPC_URL", PUBLIC_RPC), os.environ.get("RPC_FALLBACK_URL", PUBLIC_RPC)]))
 OUT = os.environ.get("OUT_DIR", "/srv/circ-web/data")
 POLL = int(os.environ.get("POLL_SECONDS", "4"))
 CHUNK = 100
@@ -35,14 +38,30 @@ TOPICS = {
 }
 
 
-def rpc(method, params):
+def redact(text):
+    for i, url in enumerate(RPCS):
+        text = str(text).replace(url, f"<rpc{i}>")
+    return text
+
+
+def rpc_at(url, method, params):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
-    req = urllib.request.Request(RPC, body, {"Content-Type": "application/json"})
+    req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=20) as r:
         res = json.load(r)
     if "error" in res or res.get("result") is None:
         raise RuntimeError(f"{method}: {res.get('error')}")
     return res["result"]
+
+
+def rpc(method, params):
+    err = None
+    for url in RPCS:
+        try:
+            return rpc_at(url, method, params)
+        except Exception as e:  # network, HTTP or JSON-RPC error: try the next endpoint
+            err = e
+    raise RuntimeError(redact(err))
 
 
 def words(data):
@@ -157,7 +176,7 @@ def main():
                 step(n, s)
                 save(n, s)
             except Exception as e:
-                print(f"{n}: {e}", flush=True)
+                print(f"{n}: {redact(e)}", flush=True)
         time.sleep(POLL)
 
 
