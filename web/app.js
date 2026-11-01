@@ -211,27 +211,54 @@ async function loadLaunches() {
       }
     } catch {}
   }
-  const list = await Promise.all([...known.values()].map((L) => readLaunch(L).catch(() => null)));
-  state.launches = list.filter(Boolean).sort((a, b) => b.block - a.block);
+  const { launches, failed } = await readLaunches([...known.values()]);
+  state.launches = launches.sort((a, b) => b.block - a.block);
+  state.readFailed = failed;
 }
 
-async function readLaunch(L) {
-  const c = await state.pad.contract.curves(L.token);
-  if (c.quote === E.ZeroAddress) return null;
-  const tok = C(L.token, ABI.erc20);
-  const [name, symbol] = await Promise.all([tok.name(), tok.symbol()]);
+async function multicall(calls) { // calls: [target, Interface, fn, args]. Returns decoded results, null where a call failed.
+  const mc = C(A.MULTICALL3, ABI.multicall), out = [];
+  for (let i = 0; i < calls.length; i += 120) {
+    const chunk = calls.slice(i, i + 120);
+    const res = await mc.aggregate3(chunk.map(([target, ifc, fn, args]) => ({ target, allowFailure: true, callData: ifc.encodeFunctionData(fn, args) })));
+    res.forEach((r, j) => { let v = null; try { if (r.success) v = chunk[j][1].decodeFunctionResult(chunk[j][2], r.returnData); } catch {} out.push(v); });
+  }
+  return out;
+}
+
+async function readLaunches(list) {
+  if (!list.length) return { launches: [], failed: 0 };
+  const padI = new E.Interface(ABI.pad), ercI = new E.Interface(ABI.erc20), gradI = new E.Interface(ABI.graduator), svI = new E.Interface(ABI.stateView);
+  const first = await multicall(list.flatMap((L) => [[state.pad.addr, padI, "curves", [L.token]], [L.token, ercI, "name", []], [L.token, ercI, "symbol", []]]));
+  const rows = list.map((L, i) => ({ L, c: first[i * 3], name: first[i * 3 + 1]?.[0], symbol: first[i * 3 + 2]?.[0] }));
+  const ok = rows.filter((r) => r.c && r.c.quote !== E.ZeroAddress && r.name != null && r.symbol != null);
+  const grad = ok.filter((r) => Number(r.c.status) === 2);
+  const keys = await multicall(grad.map((r) => [state.pad.graduator, gradI, "poolKey", [r.L.token, r.c.quote]]));
+  const coder = E.AbiCoder.defaultAbiCoder();
+  grad.forEach((r, i) => {
+    if (!keys[i]) return;
+    const k = keys[i][0];
+    r.key = k;
+    r.poolId = E.keccak256(coder.encode(["tuple(address,address,uint24,int24,address)"], [[k.currency0, k.currency1, k.fee, k.tickSpacing, k.hooks]]));
+  });
+  const withKey = grad.filter((r) => r.poolId);
+  const slots = await multicall(withKey.map((r) => [A.STATE_VIEW, svI, "getSlot0", [r.poolId]]));
+  withKey.forEach((r, i) => { r.sqrt = slots[i]?.sqrtPriceX96; });
+  return { launches: ok.map((r) => buildLaunch(r.L, r.c, r.name, r.symbol, r.poolId, r.key, r.sqrt)), failed: list.length - ok.length };
+}
+
+async function readLaunch(L) { // one launch, e.g. a token page opened by direct link
+  const { launches } = await readLaunches([L]);
+  return launches[0] || null;
+}
+
+function buildLaunch(L, c, name, symbol, poolId, key, sqrtPriceX96) {
   const cfg = state.pad.cfg[c.quote.toLowerCase()];
   const sold = cfg.cs - c.tokensLeft;
   let price = units(c.vQuote, cfg.dec) / units(c.vToken, 18);
-  let poolId = null;
-  if (Number(c.status) === 2) { // taped out: live price from the Uniswap v4 pool, not the closed curve
-    const key = await C(state.pad.graduator, ABI.graduator).poolKey(L.token, c.quote);
-    poolId = E.keccak256(E.AbiCoder.defaultAbiCoder().encode(["tuple(address,address,uint24,int24,address)"],
-      [[key.currency0, key.currency1, key.fee, key.tickSpacing, key.hooks]]));
-    const { sqrtPriceX96 } = await C(A.STATE_VIEW, ABI.stateView).getSlot0(poolId);
+  if (Number(c.status) === 2 && sqrtPriceX96) { // taped out: live price from the Uniswap v4 pool, not the closed curve
     const r = (Number(sqrtPriceX96) / 2 ** 96) ** 2; // raw currency1 per raw currency0
-    const tokenIs0 = key.currency0.toLowerCase() === L.token.toLowerCase();
-    const raw = tokenIs0 ? r : 1 / r;                 // raw quote per raw token
+    const raw = key.currency0.toLowerCase() === L.token.toLowerCase() ? r : 1 / r; // raw quote per raw token
     price = raw * 10 ** (18 - cfg.dec);
   }
   const qUsd = quoteUsd(c.quote);
@@ -239,7 +266,7 @@ async function readLaunch(L) {
     ...L, token: L.token, name, symbol, quote: c.quote, cfg,
     vQuote: c.vQuote, vToken: c.vToken, realQuote: c.realQuote, tokensLeft: c.tokensLeft,
     container: c.container, circuitNft: c.circuitNft, circuitId: c.circuitId, launchBlock: Number(c.launchBlock),
-    status: Number(c.status), poolId,
+    status: Number(c.status), poolId: poolId || null,
     progress: Number((sold * 10000n) / cfg.cs) / 100,
     price, mcQuote: price * state.pad.totalTokens, mcUsd: price * state.pad.totalTokens * qUsd,
   };
@@ -332,9 +359,8 @@ function traceHtml(cfg, mcUsdNow, qUsd, done) {
 }
 
 const safeImage = (uri, token) => safeImageCore(uri, token, HIDE);
-function ipfsImg(rel) { // <img> that walks the gateway list on error, then removes itself (initials show through)
-  return `<img src="${esc(IPFS_GATEWAYS[0] + rel)}" data-rel="${esc(rel)}" data-g="0" alt="" loading="lazy" referrerpolicy="no-referrer"
-    onerror="var g=+this.dataset.g+1;if(g<${IPFS_GATEWAYS.length}){this.dataset.g=g;this.src=${esc(JSON.stringify(IPFS_GATEWAYS))}[g]+this.dataset.rel}else{this.remove()}">`;
+function ipfsImg(rel) { // walks the gateway list on error, then removes itself so the initials show (handler at the end of this file)
+  return `<img src="${esc(IPFS_GATEWAYS[0] + rel)}" data-rel="${esc(rel)}" data-g="0" alt="" loading="lazy" referrerpolicy="no-referrer">`;
 }
 function avatar(L, cls = "") {
   const img = safeImage(L.imageURI, L.token);
@@ -374,7 +400,7 @@ async function viewFloor() {
     <div>
       <div class="eyebrow">Circ Launchpad · X Layer</div>
       <h1>Every token is <em>wired</em> to a circuit.</h1>
-      <p class="lede">Launch a fair bonding-curve token from a TapeOut Circuit you hold. Half of every fee flows to that
+      <p class="lede">Launch a bonding-curve token from a TapeOut Circuit you hold. Half of every fee flows to that
       Circuit's Container, forever. When the curve fills, it tapes out into a Uniswap v4 pool whose liquidity is locked for good.</p>
       <div class="cta"><a class="btn hub" href="#/launch">Launch from a Circuit</a><a class="btn ghost" href="#wafer">Browse the wafer</a></div>
     </div>
@@ -394,14 +420,14 @@ async function viewFloor() {
     </div>
   </section>
   ${traceHtml(w, w.p0 * p.totalTokens * okb * 1.0001, okb, false).replace('class="trace"', 'class="trace" style="margin:8px 0 4px"')}
-  <div class="section-h" id="wafer"><h2>The wafer <span class="muted mono" style="font-size:13px;font-weight:400">${L.length} launches · ${grad} taped out</span></h2>
+  <div class="section-h" id="wafer"><h2>The wafer <span class="muted mono" style="font-size:13px;font-weight:400">${L.length} launches · ${grad} taped out${state.readFailed ? ` · ${state.readFailed} couldn't be read, refresh to retry` : ""}</span></h2>
     <div class="legend"><span><i style="background:var(--orange)"></i>trading (fill = curve sold)</span><span><i style="background:var(--yellow)"></i>complete</span>
     <span><i style="background:var(--green)"></i>taped out</span><span><i style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--blue)"></i>BEM · volatile quote</span></div></div>
   <div class="wafer-wrap">
     <div class="wafer"><div class="grid">${cells.join("")}</div></div>
     <div>${L.length ? `<div class="list"><div class="row head"><div>Token</div><div>Market cap</div><div class="hide-m">Curve</div><div class="hide-m">Status</div><div>Age</div></div>${rows}</div>`
       : `<div class="empty-state"><b>The wafer is clean.</b>No launches on ${INSTANCES[state.inst].label} yet. ${state.inst === "prod"
-        ? `<br><br><button class="btn" onclick="switchInst('test')">See it with preview data</button>` : ""}</div>`}</div>
+        ? `<br><br><button class="btn" data-inst-go="test">See it with preview data</button>` : ""}</div>`}</div>
   </div>`;
 }
 
@@ -882,7 +908,7 @@ function stepsBar() {
 
 async function viewLaunch() {
   if (INSTANCES[state.inst].abi !== 2) {
-    $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Launching is mainnet-only</b>The preview instance is read-only.<br><br><button class="btn" onclick="switchInst('prod')">Switch to Mainnet</button></div>`;
+    $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Launching is mainnet-only</b>The preview instance is read-only.<br><br><button class="btn" data-inst-go="prod">Switch to Mainnet</button></div>`;
     return;
   }
   if (flow.step === 1) return stepPick();
@@ -950,7 +976,7 @@ async function stepDetails() {
   flow.quote = flow.quote || p.wokb;
   const b = p.cfg[p.bem.toLowerCase()];
   $("#app").innerHTML = `<div class="flow">${stepsBar()}<h2>Token</h2>
-    <p class="sub">Wired to <b class="mono" style="color:var(--ink)">${flow.sel.kind === "mint" ? "the next Nand (minted when you launch)" : "Nand #" + flow.sel.id}</b>. <a href="javascript:void 0" id="change" class="muted">Change</a></p>
+    <p class="sub">Wired to <b class="mono" style="color:var(--ink)">${flow.sel.kind === "mint" ? "the next Nand (minted when you launch)" : "Nand #" + flow.sel.id}</b>. <button id="change" class="linklike muted">Change</button></p>
     <div class="form">
       <div class="imgpick"><div class="prev" id="prev"></div>
         <div><label class="btn" for="img">Choose image</label><input type="file" id="img" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
@@ -1141,7 +1167,7 @@ async function viewCreator() {
     try { return (await C(x.circuitNft, ABI.nft).ownerOf(x.circuitId)).toLowerCase() === state.account.toLowerCase(); } catch { return false; }
   })) : L.map(() => true);
   const list = L.filter((_, i) => mine[i]);
-  $("#mine").innerHTML = list.length ? list.map((x) => `<a class="row" href="javascript:void 0" data-t="${x.token}" style="grid-template-columns:1fr auto">
+  $("#mine").innerHTML = list.length ? list.map((x) => `<a class="row" role="button" tabindex="0" data-t="${x.token}" style="grid-template-columns:1fr auto;cursor:pointer">
     <div class="tok">${avatar(x)}<div><b>${esc(x.name)}</b><small>${circuitLabel(x)}</small></div></div>${pills(x)}</a>`).join("")
     : `<div class="empty-state"><b>No launches ${state.account ? "for your Circuits" : "yet"}</b>${state.account ? "" : "Connect to filter by the Circuits you hold."}</div>`;
   $("#mine").onclick = (e) => { const r = e.target.closest("[data-t]"); if (r) renderCreator($("#creator"), L.find((x) => x.token === r.dataset.t)); };
@@ -1155,7 +1181,7 @@ async function loadHideList() { // moderation: token addresses whose logo is rep
 }
 async function boot() {
   setBanner();
-  loadHideList();
+  await loadHideList(); // before any logo renders, or a hidden logo could flash
   $("#app").innerHTML = `<div style="padding:80px 0" class="muted mono">Reading CurvePad on X Layer…</div>`;
   await loadPad();
   await loadPrices();
@@ -1177,11 +1203,23 @@ async function route() {
     else await viewFloor();
   } catch (e) {
     console.error(e);
-    $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Couldn't read the chain</b>${esc(e.shortMessage || e.message)}<br><br><button class="btn" onclick="location.reload()">Retry</button></div>`;
+    $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Couldn't read the chain</b>${esc(e.shortMessage || e.message)}<br><br><button class="btn" data-reload>Retry</button></div>`;
   }
 }
-window.switchInst = (i) => { state.inst = i; localSet("circ.inst", i); booted = false; location.hash = "#/"; route(); };
-document.querySelectorAll("#inst button").forEach((b) => b.onclick = () => window.switchInst(b.dataset.inst));
+const switchInst = (i) => { state.inst = i; localSet("circ.inst", i); booted = false; location.hash = "#/"; route(); };
+document.querySelectorAll("#inst button").forEach((b) => b.onclick = () => switchInst(b.dataset.inst));
+document.addEventListener("click", (e) => {
+  const g = e.target.closest("[data-inst-go]");
+  if (g) switchInst(g.dataset.instGo);
+  else if (e.target.closest("[data-reload]")) location.reload();
+});
+// Logo gateways: "error" doesn't bubble, so listen in the capture phase.
+document.addEventListener("error", (e) => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement) || !img.dataset.rel) return;
+  const g = +img.dataset.g + 1;
+  if (g < IPFS_GATEWAYS.length) { img.dataset.g = g; img.src = IPFS_GATEWAYS[g] + img.dataset.rel; } else img.remove();
+}, true);
 $("#connect").onclick = () => connect().then(() => route()).catch((e) => toast(e.shortMessage || e.message));
 window.addEventListener("hashchange", () => { if (location.hash !== "#wafer") route(); });
 route();

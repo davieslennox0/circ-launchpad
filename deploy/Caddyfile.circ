@@ -1,0 +1,19 @@
+circ.getsarf.xyz {
+	# Circ Launchpad by Sarf: static front end. Files: /srv/circ-web (source: web/ in the repo).
+	# Keyless indexer JSON under /data (systemd circ-indexer). No Sarf services behind this.
+	encode gzip
+	root * /srv/circ-web
+	header /data/* Cache-Control "no-store"
+	header /hidelist.json Cache-Control "no-store"
+	header /*.js Cache-Control "no-cache"
+	header /*.css Cache-Control "no-cache"
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://api.fontshare.com https://fonts.googleapis.com; font-src 'self' https://cdn.fontshare.com https://fonts.gstatic.com; img-src 'self' data: blob: https://ipfs.filebase.io https://dweb.link https://*.ipfs.dweb.link; connect-src 'self' https://rpc.xlayer.tech https://circ-launchpad-pin.vercel.app; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	}
+	file_server
+}

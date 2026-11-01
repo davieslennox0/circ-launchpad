@@ -389,3 +389,5 @@ html, body { overflow-x: clip; }
 .wallets h3 { margin: 0 0 12px; color: var(--ink); font-size: 16px; }
 .wallets button.w { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-sm); cursor: pointer; margin-bottom: 8px; color: var(--ink); }
 .wallets button.w img { width: 28px; height: 28px; border-radius: 6px; }
+
+.linklike { background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; font: inherit; }
