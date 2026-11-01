@@ -2,6 +2,8 @@ name: OKLink input check
 
 on:
   workflow_dispatch:
+  push:
+    branches: [chore/oklink-trimmed-input]
 
 jobs:
   compare:
