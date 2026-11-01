@@ -5,6 +5,8 @@
  * signed in the user's own wallet. */
 "use strict";
 const E = ethers;
+const { esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, recommendDirect, parseContainerRevert,
+  uncollectedFee, byteLength } = CircCore;
 
 const CHAIN_ID = 196;
 const RPC = "https://rpc.xlayer.tech";
@@ -33,6 +35,8 @@ const ABI = {
     "function circuitFactory() view returns (address)", "function graduator() view returns (address)",
     "function GUARD_BLOCKS() view returns (uint256)", "function MAX_EARLY_BUY() view returns (uint256)",
     "function TOTAL_SUPPLY() view returns (uint256)",
+    "function tradeFeeBps() pure returns (uint256)", "function feeSplitBps() pure returns (uint256,uint256,uint256)",
+    "function MAX_NAME_BYTES() view returns (uint256)", "function MAX_SYMBOL_BYTES() view returns (uint256)",
     "function quoteConfig(address) view returns (tuple(uint128 vQuote0,uint128 vToken0,uint128 curveSupply,uint128 lpTokens))",
     "function curves(address) view returns (address quote,uint128 vQuote,uint128 vToken,uint128 realQuote,uint128 tokensLeft,address container,address circuitNft,uint256 circuitId,uint64 launchBlock,uint8 status)",
     "function earlyBlock(address) view returns (uint64 blockNumber,uint192 sold)",
@@ -61,8 +65,7 @@ const ABI = {
   opener: ["function FEE() view returns (uint256)", "function open(address,uint256) payable"],
   pool: ["function slot0() view returns (uint160,int24,uint16,uint16,uint16,uint8,bool)", "function token0() view returns (address)"],
   graduator: ["function poolKey(address,address) view returns (tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks))"],
-  stateView: ["function getSlot0(bytes32) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)",
-    "function getLiquidity(bytes32) view returns (uint128)"],
+  stateView: ["function getSlot0(bytes32) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)"],
   nandout: ["function transistors() view returns (address)", "function nextId() view returns (uint256)",
     "function TAPEOUT_FEE() view returns (uint256)", "function ownerOf(uint256) view returns (address)",
     "function tapeout(bytes,uint32,uint32) payable returns (uint256)",
@@ -77,8 +80,6 @@ const ABI = {
 const rp = new E.JsonRpcProvider(RPC, CHAIN_ID, { staticNetwork: true, batchMaxCount: 1 });
 const C = (addr, abi, runner = rp) => new E.Contract(addr, abi, runner);
 const $ = (s, el = document) => el.querySelector(s);
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const short = (a) => a ? a.slice(0, 6) + "…" + a.slice(-4) : "";
 const STATUS = ["Trading", "Complete", "Taped out"];
 const STATUS_CLS = ["trading", "complete", "grad"];
 
@@ -143,6 +144,9 @@ async function loadPad() {
     await Promise.all([pad.wokb(), pad.bem(), pad.locker(), pad.hook(), pad.protocol(), pad.sink(), pad.registry(),
       pad.containerImpl(), pad.circuitFactory(), pad.GUARD_BLOCKS(), pad.MAX_EARLY_BUY(), pad.TOTAL_SUPPLY(), pad.graduator()]);
   const [cw, cb] = await Promise.all([pad.quoteConfig(wokb), pad.quoteConfig(bem)]);
+  // tradeFeeBps() / feeSplitBps() exist from v3 on; earlier pads charge the same 1% and 50/30/20.
+  const feeBps = await pad.tradeFeeBps().catch(() => 100n);
+  const split = await pad.feeSplitBps().catch(() => [5000n, 3000n, 2000n]);
   const cfg = (c, dec, sym) => {
     const vQ0 = c.vQuote0, vT0 = c.vToken0, cs = c.curveSupply, lp = c.lpTokens, tEnd = vT0 - cs;
     const qEnd = (vQ0 * vT0) / tEnd;
@@ -154,7 +158,7 @@ async function loadPad() {
     };
   };
   state.pad = {
-    addr: inst.pad, contract: pad, graduator, wokb, bem, locker, hook, protocol, sink, registry, containerImpl, factory,
+    addr: inst.pad, contract: pad, feeBps, split: split.map(Number), graduator, wokb, bem, locker, hook, protocol, sink, registry, containerImpl, factory,
     guard: Number(guard), maxEarly, total, totalTokens: units(total, 18),
     cfg: { [wokb.toLowerCase()]: cfg(cw, 18, "WOKB"), [bem.toLowerCase()]: cfg(cb, 8, "BEM") },
   };
@@ -226,7 +230,6 @@ async function readLaunch(L) {
     status: Number(c.status), poolId,
     progress: Number((sold * 10000n) / cfg.cs) / 100,
     price, mcQuote: price * state.pad.totalTokens, mcUsd: price * state.pad.totalTokens * qUsd,
-    raisedUsd: units(c.realQuote, cfg.dec) * qUsd,
   };
 }
 
@@ -291,22 +294,11 @@ function traceHtml(cfg, mcUsdNow, qUsd, done) {
     </div></div>`;
 }
 
-// Only ipfs://<CID> renders (CIDv1 base32 "b…" or CIDv0 "Qm…", optional /path of safe chars); anything else -> initials.
-const CID_RE = /^(b[a-z2-7]{58,}|Qm[1-9A-HJ-NP-Za-km-z]{44})$/;
-function safeImage(uri, token) {
-  if (typeof uri !== "string" || !uri.startsWith("ipfs://") || uri.length > 256) return null;
-  if (token && HIDE.has(token.toLowerCase())) return null;
-  const [cid, ...rest] = uri.slice(7).split("/");
-  if (!CID_RE.test(cid)) return null;
-  const path = rest.join("/");
-  if (path && !/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(path)) return null;
-  return cid + (path ? "/" + path : ""); // gateway-relative; see ipfsImg()
-}
+const safeImage = (uri, token) => safeImageCore(uri, token, HIDE);
 function ipfsImg(rel) { // <img> that walks the gateway list on error, then removes itself (initials show through)
   return `<img src="${esc(IPFS_GATEWAYS[0] + rel)}" data-rel="${esc(rel)}" data-g="0" alt="" loading="lazy" referrerpolicy="no-referrer"
     onerror="var g=+this.dataset.g+1;if(g<${IPFS_GATEWAYS.length}){this.dataset.g=g;this.src=${esc(JSON.stringify(IPFS_GATEWAYS))}[g]+this.dataset.rel}else{this.remove()}">`;
 }
-function initials(sym) { return esc(String(sym || "?").replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "?"); }
 function avatar(L, cls = "") {
   const img = safeImage(L.imageURI, L.token);
   const fallback = `<span>${initials(L.symbol)}</span>`;
@@ -322,7 +314,6 @@ async function viewFloor() {
   const okb = state.prices.okbUsd, bemU = state.prices.bemUsd;
   const L = state.launches;
   const grad = L.filter((x) => x.status === 2).length;
-  const slots = 52; // 8x8 grid clipped to a circle
   const cells = [];
   let k = 0;
   for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
@@ -334,7 +325,6 @@ async function viewFloor() {
     cells.push(`<a class="${cls}" href="#/t/${x.token}" title="${esc(x.symbol)} · ${x.progress.toFixed(1)}% · ${usd(x.mcUsd)}">
       ${x.status === 2 ? "" : `<div class="fill" style="height:${Math.max(4, x.progress)}%"></div>`}<span class="sym">${esc(x.symbol.slice(0, 5))}</span></a>`);
   }
-  void slots;
   const rows = L.map((x) => `<a class="row" href="#/t/${x.token}">
       <div class="tok">${avatar(x)}<div><b>${esc(x.name)}</b><small>$${esc(x.symbol)} · ${circuitLabel(x)}</small></div></div>
       <div class="mono">${usd(x.mcUsd)}<div class="muted" style="font-size:12px">${num(x.mcQuote, 2)} ${x.cfg.sym}</div></div>
@@ -479,30 +469,41 @@ function renderTrade(box, L, guardLeft) {
     <dl class="kv" id="pv"><dt>You receive</dt><dd>–</dd></dl>
     ${guardLeft > 0 ? `<div class="note warn">Anti-snipe guard: ${guardLeft} more blocks. Buys are capped at ${num(units(state.pad.maxEarly, 18), 1)} tokens per block across all buyers.</div>` : ""}
     <button class="btn hub block" id="go">Connect wallet</button>
-    <div class="note">1% fee on every trade: 50% to this launch's Container, 30% protocol, 20% sink. Slippage limit 1%.</div>`;
+    <div class="note">${Number(state.pad.feeBps) / 100}% fee on every trade: ${state.pad.split[0] / 100}% to this launch's Container, ${state.pad.split[1] / 100}% protocol, ${state.pad.split[2] / 100}% sink. Slippage limit 1%.</div>`;
   const amt = $("#amt", box), pv = $("#pv", box), go = $("#go", box);
   const quick = () => $("#quick", box).innerHTML = (side === "buy"
     ? (wokbQ ? ["0.01", "0.1", "0.5", "1"] : ["1", "5", "10", "25"]).map((v) => `<button data-v="${v}">${v} ${wokbQ ? "OKB" : "BEM"}</button>`)
     : ["25", "50", "100"].map((v) => `<button data-p="${v}">${v}%</button>`)).join("");
-  let last = null;
+  // `last` is what the button will send. It is cleared on every keystroke, and a slow preview for an older amount is
+  // discarded (seq), so the button can never send anything but the amount on screen.
+  let last = null, seq = 0;
   async function preview() {
-    const v = amt.value.trim(); last = null;
+    const mine = ++seq, v = amt.value.trim(); last = null;
     if (!v || isNaN(+v) || +v <= 0) { pv.innerHTML = `<dt>You receive</dt><dd>–</dd>`; return; }
     try {
       if (side === "buy") {
         const q = E.parseUnits(v, qd);
-        const [out, used] = await state.pad.contract.previewBuy(L.token, q);
-        last = { q: used, min: (out * 99n) / 100n };
-        pv.innerHTML = `<dt>You receive</dt><dd>${num(units(out, 18), 2)} ${esc(L.symbol)}</dd>
-          ${used < q ? `<dt>Used (curve fills)</dt><dd>${num(units(used, qd), 6)} ${sym}</dd>` : ""}
-          <dt>Fee (1%)</dt><dd>${num(units(q, qd) * 0.01, 6)} ${sym}</dd>`;
+        const pad = state.pad.contract;
+        const [c, head, early] = await Promise.all([pad.curves(L.token), rp.getBlockNumber(), pad.earlyBlock(L.token)]);
+        const guarded = head + 1 < Number(c.launchBlock) + state.pad.guard;
+        const r = previewCurveBuy({ vQuote: c.vQuote, vToken: c.vToken, tokensLeft: c.tokensLeft, quoteIn: q, feeBps: state.pad.feeBps,
+          guarded, maxEarly: state.pad.maxEarly, soldThisBlock: Number(early.blockNumber) >= head ? early.sold : 0n });
+        if (mine !== seq) return;
+        if (r.out === 0n) { pv.innerHTML = `<dt>Preview</dt><dd>${guarded ? "this block's cap is used up, try again" : "amount too small"}</dd>`; return; }
+        // While guarded we send the full amount: the contract applies the cap at the block it lands in and refunds the rest.
+        last = { q: guarded ? q : r.used, min: r.minOut };
+        pv.innerHTML = `<dt>You receive</dt><dd>${r.capped ? "up to " : ""}${num(units(r.out, 18), 2)} ${esc(L.symbol)}</dd>
+          ${r.used < q ? `<dt>${r.capped ? "Used (block cap)" : "Used (curve fills)"}</dt><dd>${num(units(r.used, qd), 6)} ${sym}</dd>
+          <dt>Refunded</dt><dd>${num(units(q - r.used, qd), 6)} ${sym}</dd>` : ""}
+          <dt>Fee</dt><dd>${num(units(r.fee, qd), 6)} ${sym}</dd>`;
       } else {
         const t = E.parseUnits(v, 18);
         const out = await state.pad.contract.previewSell(L.token, t);
+        if (mine !== seq) return;
         last = { t, min: (out * 99n) / 100n };
         pv.innerHTML = `<dt>You receive</dt><dd>${num(units(out, qd), 6)} ${sym}${wokbQ ? " (as WOKB)" : ""}</dd>`;
       }
-    } catch (e) { pv.innerHTML = `<dt>Preview</dt><dd>${esc(e.shortMessage || "unavailable")}</dd>`; }
+    } catch (e) { if (mine === seq) pv.innerHTML = `<dt>Preview</dt><dd>${esc(e.shortMessage || "unavailable")}</dd>`; }
   }
   async function balances() {
     if (!state.account) { go.textContent = "Connect wallet"; return; }
@@ -524,24 +525,33 @@ function renderTrade(box, L, guardLeft) {
     else if (box._bal) amt.value = E.formatUnits((box._bal * BigInt(b.dataset.p)) / 100n, 18);
     preview();
   };
-  amt.oninput = () => { clearTimeout(amt._t); amt._t = setTimeout(preview, 250); };
+  amt.oninput = () => { last = null; seq++; clearTimeout(amt._t); amt._t = setTimeout(preview, 250); };
   $("#inlab", box).textContent = `You pay (${wokbQ ? "OKB" : "BEM"})`;
   quick(); balances();
   go.onclick = async () => {
     if (!state.account) { await connect(); balances(); return; }
-    if (!last) { toast("Enter an amount"); return; }
+    if (!last) { toast(amt.value.trim() ? "Updating the quote, try again in a moment" : "Enter an amount"); return; }
+    const order = last; // fixed for this click, whatever the input does while the wallet is open
     const deadline = Math.floor(Date.now() / 1000) + 1200;
     if (side === "buy") {
-      if (wokbQ) sendTx("Buy", (s) => C(state.pad.addr, ABI.pad, s).buyWithOKB(L.token, last.min, deadline, { value: last.q }));
+      if (wokbQ) sendTx("Buy", (s) => C(state.pad.addr, ABI.pad, s).buyWithOKB(L.token, order.min, deadline, { value: order.q }));
       else sendTx("Buy", async (s) => {
         const t = C(L.quote, ABI.erc20, s);
-        if ((await t.allowance(state.account, state.pad.addr)) < last.q) await (await t.approve(state.pad.addr, last.q)).wait();
-        return C(state.pad.addr, ABI.pad, s).buy(L.token, last.q, last.min, deadline);
+        if ((await t.allowance(state.account, state.pad.addr)) < order.q) {
+          toast("Signature 1 of 2: approve BEM");
+          await (await t.approve(state.pad.addr, order.q)).wait();
+          toast("Signature 2 of 2: buy");
+        }
+        return C(state.pad.addr, ABI.pad, s).buy(L.token, order.q, order.min, deadline);
       });
     } else sendTx("Sell", async (s) => {
       const t = C(L.token, ABI.erc20, s);
-      if ((await t.allowance(state.account, state.pad.addr)) < last.t) await (await t.approve(state.pad.addr, last.t)).wait();
-      return C(state.pad.addr, ABI.pad, s).sell(L.token, last.t, last.min, deadline);
+      if ((await t.allowance(state.account, state.pad.addr)) < order.t) {
+        toast("Signature 1 of 2: approve the token");
+        await (await t.approve(state.pad.addr, order.t)).wait();
+        toast("Signature 2 of 2: sell");
+      }
+      return C(state.pad.addr, ABI.pad, s).sell(L.token, order.t, order.min, deadline);
     });
   };
 }
@@ -595,21 +605,28 @@ async function renderCreator(el, L) {
       <button class="btn block" id="cl-cont" ${isHolder ? "" : "disabled"}>${isHolder ? "Claim to Container" : "Holder only"}</button></div>
     <div class="note">Fees arrive as ${isBem(L.quote) ? "BEM" : "WOKB (wrapped OKB)"} plus the launch token, not native OKB.</div>`;
   const claim = (toHolder) => sendTx(toHolder ? "Claim to wallet" : "Claim to Container", async (s) => {
-    let tx;
+    // One transaction per vault and asset, each confirmed before the next, so the signature count on screen is true.
+    const jobs = [];
     for (const r of rows) {
-      if (r.pa > 0n) tx = await C(p.addr, ABI.pad, s).claimCreator(L.container, r.a, toHolder);
-      if (r.la > 0n) tx = await C(p.locker, ABI.locker, s).claimCreator(L.container, r.a, toHolder);
+      if (r.pa > 0n) jobs.push([C(p.addr, ABI.pad, s), r]);
+      if (r.la > 0n) jobs.push([C(p.locker, ABI.locker, s), r]);
     }
-    if (!tx) throw new Error("nothing to claim");
+    if (!jobs.length) throw new Error("nothing to claim");
+    let tx;
+    for (let i = 0; i < jobs.length; i++) {
+      toast(`Signature ${i + 1} of ${jobs.length}: claim ${jobs[i][1].sym}`);
+      if (tx) await tx.wait();
+      tx = await jobs[i][0].claimCreator(L.container, jobs[i][1].a, toHolder);
+    }
     return tx;
   });
   if (isHolder) { $("#cl-direct", el).onclick = () => claim(true); $("#cl-cont", el).onclick = () => claim(false); }
 }
 
 async function viewLaunchAdvanced() {
-  const p = state.pad, okb = state.prices.okbUsd;
+  const p = state.pad;
   const opt = (q) => { const c = p.cfg[q.toLowerCase()]; const u = quoteUsd(q); return { c, u }; };
-  const w = opt(p.wokb), b = opt(p.bem);
+  const b = opt(p.bem);
   $("#app").innerHTML = `
   <div class="tp-head"><div><div class="eyebrow"><a href="#/launch" style="text-decoration:none">← Launch</a> · Advanced</div><h1>Launch from any TapeOut Circuit</h1>
     <p class="lede" style="margin:10px 0 0">You must hold the TapeOut Circuit. The token's Container is that Circuit's ERC-6551 account: it earns 50% of every fee, forever, and moves with the NFT.</p></div></div>
@@ -690,12 +707,13 @@ async function squareCrop(file) {
 
 async function nandoutFacts() {
   const n = C(A.NANDOUT, ABI.nandout);
-  const [tAddr, nextId, tapeFee] = await Promise.all([n.transistors(), n.nextId(), n.TAPEOUT_FEE()]);
+  // tapeout does `circuitId = ++nextId`, so nextId() is the last minted id.
+  const [tAddr, lastId, tapeFee] = await Promise.all([n.transistors(), n.nextId(), n.TAPEOUT_FEE()]);
   const t = C(tAddr, ABI.transistors);
   const [price, protoFee, cap, minted] = await Promise.all([t.mintPrice(), t.protocolFee(), t.supplyCap(), t.minted()]);
   const held = state.account ? await t.balanceOf(state.account, 0) : 0n; // spare NAND transistors skip the mint tx
   const mintCost = (held > 0n ? 0n : price + protoFee) + tapeFee;
-  return { tAddr, nextId: Number(nextId), tapeFee, price, protoFee, cap, minted, held, mintCost, open: minted + 1n <= cap };
+  return { tAddr, lastId: Number(lastId), nextMintId: nextNandId(lastId), tapeFee, price, protoFee, cap, minted, held, mintCost, open: minted + 1n <= cap };
 }
 
 async function ownersOf(ids) { // one eth_call per 150 ids through Multicall3
@@ -743,7 +761,7 @@ async function stepPick() {
   const okb = state.prices.okbUsd;
   let rows = [];
   if (state.account) {
-    const ids = Array.from({ length: f.nextId - 1 }, (_, i) => i + 1);
+    const ids = nandIds(f.lastId);
     const owners = await ownersOf(ids);
     const me = state.account.toLowerCase();
     const mine = ids.filter((id) => owners[id]?.toLowerCase() === me);
@@ -754,7 +772,7 @@ async function stepPick() {
   }
   const mintRow = f.open ? `<button class="nand mint ${flow.sel?.kind === "mint" ? "sel" : ""}" data-k="mint">
       <span class="mk">${flow.sel?.kind === "mint" ? "✓" : ""}</span><span class="n">+ Mint</span>
-      <span class="info">the next Nand (#${f.nextId}) · ~${E.formatEther(f.mintCost)} OKB + gas (${usd(units(f.mintCost, 18) * okb)})</span>
+      <span class="info">the next Nand (#${f.nextMintId}) · ~${E.formatEther(f.mintCost)} OKB + gas (${usd(units(f.mintCost, 18) * okb)})</span>
       <span class="st">Available</span></button>` : "";
   const rowHtml = (r) => {
     const on = flow.sel?.kind === "owned" && flow.sel.id === r.id, dis = r.status === "Launched";
@@ -846,6 +864,8 @@ async function stepDetails() {
     if (flow.img && !flow.imageURI && !confirm("The logo hasn't finished uploading. Continue with the initials avatar?")) return;
     flow.name = $("#name").value.trim(); flow.sym = $("#sym").value.trim().toUpperCase(); flow.dev = $("#dev").value.trim();
     if (!flow.name || !flow.sym) { toast("Name and ticker are required"); return; }
+    if (byteLength(flow.name) > 64) { toast("Name is too long (64 bytes max)"); return; }
+    if (byteLength(flow.sym) > 16) { toast("Ticker is too long (16 bytes max)"); return; }
     if (flow.dev && !(+flow.dev >= 0)) { toast("Dev buy must be a number"); return; }
     flow.step = 3; route();
   };
@@ -865,7 +885,14 @@ async function stepConfirm() {
   const gasOkb = units(gp * (900000n + (minting ? 450000n : 0n)), 18); // createLaunch ≈ 760k gas (+ dev buy); mint+tapeout ≈ 300k
   const mintOkb = minting ? units(f.mintCost, 18) : 0;
   const totalOkb = (bem ? 0 : dev) + mintOkb + gasOkb;
-  const sigs = minting ? [...(f.held === 0n ? ["Buy 1 NAND transistor"] : []), "Tape out your Nand", `Launch $${flow.sym}`] : [`Launch $${flow.sym}`];
+  // Every signature this run needs, in order. A BEM dev buy needs an approve first unless one is already in place.
+  const needApprove = bem && devWei > 0n && state.account && (await C(flow.quote, ABI.erc20).allowance(state.account, p.addr)) < devWei;
+  const sigs = [
+    ...(minting && f.held === 0n ? [{ id: "buy", t: "Buy 1 NAND transistor" }] : []),
+    ...(minting ? [{ id: "tape", t: "Tape out your Nand" }] : []),
+    ...(needApprove ? [{ id: "approve", t: "Approve BEM for the dev buy" }] : []),
+    { id: "launch", t: `Launch $${flow.sym}` },
+  ];
   const L = { token: "0x" + "0".repeat(40), symbol: flow.sym, imageURI: flow.imageURI };
   $("#app").innerHTML = `<div class="flow">${stepsBar()}<h2>Confirm launch</h2>
     <div class="sheet">
@@ -884,7 +911,7 @@ async function stepConfirm() {
         <dt>Network fees (est.)</dt><dd>~${gasOkb.toPrecision(2)} OKB</dd>
         <dt><b style="color:var(--ink)">Total cost</b></dt><dd><b style="color:var(--ink)">${bem && dev ? `${esc(flow.dev)} BEM + ` : ""}~${totalOkb.toPrecision(3)} OKB · ${usd(totalOkb * state.prices.okbUsd + (bem ? dev * state.prices.bemUsd : 0))}</b></dd>
       </dl>
-      <div class="run" id="run">${sigs.map((t, k) => `<div class="sig" data-k="${k}"><span class="dotk">${k + 1}</span><span>Signature ${k + 1} of ${sigs.length}: ${esc(t)}</span><span class="st mono"></span></div>`).join("")}
+      <div class="run" id="run">${sigs.map((g, k) => `<div class="sig" data-k="${g.id}"><span class="dotk">${k + 1}</span><span>Signature ${k + 1} of ${sigs.length}: ${esc(g.t)}</span><span class="st mono"></span></div>`).join("")}
         <div class="bar" style="margin-top:10px"><div id="runbar" style="width:0%"></div></div></div>
       <label class="check"><input type="checkbox" id="ack"><span>I understand this launches on X Layer mainnet, can't be undone, and uses up this Circuit's one launch.</span></label>
       <button class="btn hub block" id="go" disabled>${minting ? `Mint Nand & launch ${esc(flow.sym)}` : `Launch ${esc(flow.sym)}`}</button>
@@ -893,59 +920,76 @@ async function stepConfirm() {
     </div></div>`;
   $("#ack").onchange = (e) => { $("#go").disabled = !e.target.checked; };
   $("#back").onclick = () => { flow.step = 2; route(); };
-  const mark = (k, st, txt) => {
-    const el = document.querySelector(`.sig[data-k="${k}"]`); if (!el) return;
+  const done = new Set();
+  const mark = (sig, st, txt) => {
+    const el = document.querySelector(`.sig[data-k="${sig}"]`); if (!el) return;
     el.className = "sig " + st; el.querySelector(".st").textContent = txt || "";
-    $("#runbar").style.width = `${((k + (st === "done" ? 1 : 0.5)) / sigs.length) * 100}%`;
+    if (st === "done") done.add(sig);
+    $("#runbar").style.width = `${((done.size + (st === "done" ? 0 : 0.5)) / sigs.length) * 100}%`;
   };
+  let current = null; // the signature in progress, for the failure mark
+  const step = (sig, txt) => { current = sig; mark(sig, "on", txt); };
   $("#go").onclick = async () => {
     const go = $("#go"); go.disabled = true; $("#back").disabled = true;
     const log = (m) => { $("#runlog").innerHTML += esc(m) + "<br>"; };
-    let k = 0, id = flow.sel.id;
     try {
       const s = await signer();
-      if (minting) {
-        const g = await nandoutFacts(); // re-read: someone may have minted since the sheet opened
+      // Read what is still to do on every press: a retry must never buy or tape out again.
+      if (flow.sel.kind === "mint") {
+        const g = await nandoutFacts();
         if (g.held === 0n) {
-          mark(k, "on", "confirm in wallet");
+          step("buy", "confirm in wallet");
           const tx = await C(g.tAddr, ABI.transistors, s).mint(0, 1, { value: g.price + g.protoFee });
-          mark(k, "on", "pending " + short(tx.hash)); await tx.wait(); mark(k++, "done", "✓");
+          step("buy", "pending " + short(tx.hash)); await tx.wait();
         }
-        mark(k, "on", "confirm in wallet");
+        mark("buy", "done", "✓");
+        step("tape", "confirm in wallet");
+        const expected = g.nextMintId;
         const tx2 = await C(A.NANDOUT, ABI.nandout, s).tapeout(ONE_NAND, 2, 1, { value: g.tapeFee });
-        mark(k, "on", "pending " + short(tx2.hash));
+        step("tape", "pending " + short(tx2.hash));
         const r = await tx2.wait();
         const ni = new E.Interface(ABI.nandout);
         const ev = r.logs.map((l) => { try { return ni.parseLog(l); } catch { return null; } }).find((e) => e?.name === "TapedOut");
         if (!ev) throw new Error("TapedOut event not found");
-        id = Number(ev.args.circuitId); // ids are sequential: if someone minted first, this is simply the next one
+        const id = Number(ev.args.circuitId); // sequential: if someone minted first, this is simply the next one
         flow.sel = { kind: "owned", id };
-        mark(k++, "done", `✓ Nand #${id}`);
-        if (id !== g.nextId) log(`Someone minted #${g.nextId} first; your Nand is #${id}.`);
+        mark("tape", "done", `✓ Nand #${id}`);
+        if (id !== expected) log(`Someone minted #${expected} first; your Nand is #${id}.`);
       }
+      const id = flow.sel.id;
       const owner = await C(A.NANDOUT, ABI.nandout).ownerOf(id);
       if (owner.toLowerCase() !== state.account.toLowerCase()) throw new Error(`you no longer hold Nand #${id}`);
       if (await p.contract.isLaunched(A.NANDOUT, id)) throw new Error(`Nand #${id} has already launched a token`);
       const pad = C(p.addr, ABI.pad, s);
       const uri = safeImage(flow.imageURI) ? flow.imageURI : "";
-      mark(k, "on", "confirm in wallet");
       let tx3;
-      if (!bem) tx3 = await pad.createLaunch(A.NANDOUT, id, flow.name, flow.sym, uri, flow.quote, 0, 0, { value: devWei });
-      else {
-        if (devWei > 0n) { const t = C(flow.quote, ABI.erc20, s); if ((await t.allowance(state.account, p.addr)) < devWei) await (await t.approve(p.addr, devWei)).wait(); }
+      if (!bem) {
+        step("launch", "confirm in wallet");
+        tx3 = await pad.createLaunch(A.NANDOUT, id, flow.name, flow.sym, uri, flow.quote, 0, 0, { value: devWei });
+      } else {
+        if (devWei > 0n) {
+          const t = C(flow.quote, ABI.erc20, s);
+          if ((await t.allowance(state.account, p.addr)) < devWei) {
+            step("approve", "confirm in wallet");
+            const ax = await t.approve(p.addr, devWei);
+            step("approve", "pending " + short(ax.hash)); await ax.wait();
+          }
+          mark("approve", "done", "✓");
+        }
+        step("launch", "confirm in wallet");
         tx3 = await pad.createLaunch(A.NANDOUT, id, flow.name, flow.sym, uri, flow.quote, devWei, 0);
       }
-      mark(k, "on", "pending " + short(tx3.hash));
+      step("launch", "pending " + short(tx3.hash));
       const r3 = await tx3.wait();
       const ev3 = r3.logs.map((l) => { try { return new E.Interface(ABI.pad).parseLog(l); } catch { return null; } }).find((e) => e?.name === "LaunchCreated");
-      mark(k, "done", "✓ launched");
+      mark("launch", "done", "✓ launched");
       toast(`$${flow.sym} is live`);
       if (ev3) { Object.assign(flow, { step: 1, sel: null, name: "", sym: "", img: null, imageURI: "", dev: "" }); location.hash = "#/t/" + ev3.args.token; }
     } catch (e) {
-      mark(k, "err", "failed");
+      if (current) mark(current, "err", "failed");
       log("error: " + (e.shortMessage || e.reason || e.message).slice(0, 180));
       go.disabled = false; $("#back").disabled = false; go.textContent = "Retry";
-      if (minting && flow.sel.kind === "owned") { log(`Your Nand #${flow.sel.id} is minted; retry continues with the launch.`); }
+      if (flow.sel.kind === "owned" && minting) log(`Your Nand #${flow.sel.id} is minted. Retry continues with the launch only.`);
     }
   };
 }
@@ -994,7 +1038,6 @@ async function route() {
     else if (h.startsWith("/launch")) await viewLaunch();
     else if (h.startsWith("/creator")) await viewCreator();
     else await viewFloor();
-    if (h === "/" && location.hash === "#wafer") $("#wafer")?.scrollIntoView();
   } catch (e) {
     console.error(e);
     $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Couldn't read the chain</b>${esc(e.shortMessage || e.message)}<br><br><button class="btn" onclick="location.reload()">Retry</button></div>`;
