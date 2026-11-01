@@ -59,5 +59,5 @@ Replaced before any launch: no one-launch-per-Circuit guard or `imageURI`. Zero 
 
 ### CIRC-TEST (test only)
 Tiny 0.099 WOKB curves used for live end-to-end runs, never for users. v3 code: CurvePad
-`0x8f2bbd9dA778071a8B6E9C2D3fEC3f3a6850E6BA` (shown on the site as "Preview data"). Older code: CurvePad
+`0x8f2bbd9dA778071a8B6E9C2D3fEC3f3a6850E6BA` (used by the staging copy only). Older code: CurvePad
 `0xa66D7020a374BCC3e6424B9075E481617C669057`.

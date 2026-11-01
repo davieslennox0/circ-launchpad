@@ -64,7 +64,8 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   check(`${label}: spec is read from the expected CurvePad`, (await p.ev(text())).toLowerCase().includes(PAD));
   check(`${label}: real logo loaded`, await p.until(`(() => { const i = document.querySelector(".brand img"); return i.complete && i.naturalWidth > 0; })()`, 15000));
   check(`${label}: no pink in the UI`, !(await p.ev(`getComputedStyle(document.documentElement).getPropertyValue("--hub")`)).toLowerCase().includes("ea3680"));
-  if (STAGING) check(`${label}: staging banner shown, instance switch hidden`, (await p.ev(text("#banner"))).includes("STAGING") && await p.ev(`document.querySelector("#inst").hidden`));
+  check(`${label}: no instance switch or preview wording`, !/Preview data/i.test(await p.ev(text())) && !(await p.ev(`document.querySelector("#inst")`)) && !/\bMainnet\b/.test(await p.ev(text("header"))));
+  check(`${label}: banner matches the site`, STAGING ? (await p.ev(text("#banner"))).includes("STAGING") : await p.ev(`document.querySelector("#banner").hidden`));
   check(`${label}: nothing wider than the screen`, await p.ev(`document.documentElement.scrollWidth <= innerWidth`), await p.ev(`document.documentElement.scrollWidth + " vs " + innerWidth`));
   check(`${label}: Connect button fully on screen`, await p.ev(`(() => { const r = document.querySelector("#connect").getBoundingClientRect(); return r.right <= innerWidth && r.left >= 0; })()`));
   check(`${label}: nav reaches Launch and Creator fees`, await p.ev(`[...document.querySelectorAll("nav.links a")].filter((a) => a.getBoundingClientRect().width > 0).length === 3`));
@@ -93,10 +94,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   check(`${label}: launch would go to the expected CurvePad, and the mock wallet rejected it`, tx && tx.to?.toLowerCase() === PAD, tx ? tx.to : "no tx");
   check(`${label}: rejection shown, retry offered`, await p.until(`${text("#runlog")}.includes("error")`, 10000));
 
-  if (!STAGING) {
-    await p.ev(`document.querySelector('#inst button[data-inst="test"]').click()`);
-    await p.until(`${text("#banner")}.includes("Preview data")`, 20000);
-  }
+  if (STAGING) { // token pages need a launch, so they are tested where one exists
   await go(p, "#/t/" + TEST_TOKEN);
   check(`${label}: token page shows Dev holds`, await p.until(`${text()}.includes("Dev holds")`), (await p.ev(`[...document.querySelectorAll(".pill")].map((x) => x.innerText).join(" | ")`)).slice(0, 90));
   check(`${label}: taped-out token has an in-app swap box (H6)`, await p.until(`document.querySelector("#tradebox .trade-tabs")`));
@@ -106,6 +104,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   const logo = await p.until(`(() => { const i = document.querySelector(".tp-head .av img"); return i && i.complete && i.naturalWidth > 0; })()`, 40000);
   console.log(`${logo ? "PASS" : "INFO"}  ${label}: IPFS logo ${logo ? "loaded" : "didn't load from the gateways from this server (initials shown)"}`);
   await p.shot(`${label}-token`);
+  }
   const csp = await p.ev(`window.__csp`);
   check(`${label}: no CSP violations`, csp.length === 0, csp.slice(0, 3).join("; "));
   // The public RPC's rate-limit replies show up as CORS errors; reads retry them, so they aren't failures. Count them anyway.
@@ -113,7 +112,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   if (rpcLimited) console.log(`INFO  ${label}: ${rpcLimited} RPC request(s) rate-limited or dropped, then retried`);
   const bad = p.problems.filter((x) => !/429|Too Many|ERR_|Failed to load resource|rpc\.xlayer\.tech/.test(x));
   check(`${label}: no uncaught page errors`, bad.length === 0, bad.slice(0, 2).join(" || "));
-  await p.ev(`localStorage.removeItem("circ.inst")`); // the browser profile is shared between runs
+  await p.send("Page.close").catch(() => {});
 }
 
 // Phone browser with no wallet at all
