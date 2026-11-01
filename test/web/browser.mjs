@@ -71,6 +71,34 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     check(`${label}: every token row has 5M, 30M, 1H and 24H`, await p.ev(`[...document.querySelectorAll("a.row")].every((r) => r.querySelectorAll(".chg").length === 4)`));
     check(`${label}: a dumped token shows a red change`, await p.ev(`document.querySelectorAll("a.row .chg.down").length > 0`), await p.ev(`[...document.querySelectorAll("a.row")].map((r) => [...r.querySelectorAll(".chg")].map((c) => c.innerText).join(" ")).join(" | ")`));
   }
+  if (STAGING) {
+    for (const v of ["table", "board", "gallery", "race"]) {
+      await p.ev(`document.querySelector('[data-view="${v}"]').click()`);
+      await sleep(150);
+      check(`${label}: ${v} view shows real tokens`, /DOUG/.test(await p.ev(text("#floor-view"))));
+      check(`${label}: ${v} view has no sideways scrolling`, await p.ev(`document.documentElement.scrollWidth <= innerWidth`));
+      await p.ev(`document.querySelector(".floor-tools").scrollIntoView({ block: "start" }); scrollBy(0, -70)`);
+      await sleep(150);
+      await p.shot(`${label}-view-${v}`);
+    }
+    await p.ev(`document.querySelector('[data-view="table"]').click()`);
+    await p.ev(`document.querySelector('[data-sort="age"]').click()`);
+    await sleep(100);
+    const oldest = await p.ev(`document.querySelector("a.f-row b").innerText`);
+    check(`${label}: table sorts`, oldest === "CIRCTEST", oldest);
+    await p.ev(`document.querySelector('[data-view="wafer"]').click()`);
+    const search = async (q) => { await p.ev(`(() => { const i = document.querySelector("#floor-q"); i.value = ${JSON.stringify(q)}; i.dispatchEvent(new Event("input", { bubbles: true })); })()`); await sleep(100); return p.ev(text("#floor-view")); };
+    const hit = await search("doug");
+    check(`${label}: search finds a token, keeps the box`, /DOUG/.test(hit) && !/CIRCTEST/.test(hit) && await p.ev(`!!document.querySelector("#floor-q")`));
+    check(`${label}: search by Nand number`, /DOUG/.test(await search("nand 13")));
+    check(`${label}: search with no match says so`, /Nothing matches/.test(await search("zzzzz")));
+    await search("");
+    await p.ev(`document.querySelector('[data-filter="near"]').click()`);
+    await sleep(100);
+    check(`${label}: filter applies`, !/DOUG/.test(await p.ev(text("#floor-view"))));
+    await p.ev(`document.querySelector('[data-filter="all"]').click()`);
+    await sleep(100);
+  }
   await p.ev(`confetti()`);
   check(`${label}: confetti runs`, await p.ev(`!!document.querySelector("#confetti")`));
   await sleep(700);
@@ -120,6 +148,13 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   check(`${label}: pool quote works through the Quoter`, await p.until(`${text("#pv")}.includes("Minimum")`, 30000), (await p.ev(text("#pv"))).replace(/\n/g, " ").slice(0, 80));
   const logo = await p.until(`(() => { const i = document.querySelector(".tp-head .av img"); return i && i.complete && i.naturalWidth > 0; })()`, 40000);
   console.log(`${logo ? "PASS" : "INFO"}  ${label}: IPFS logo ${logo ? "loaded" : "didn't load from the gateways from this server (initials shown)"}`);
+  check(`${label}: token page has the price chart and signal wire`, await p.until(`!!document.querySelector("#price-chart polyline") && !!document.querySelector("svg.wire")`, 15000));
+  await p.ev(`document.querySelector('[data-frame="5M"]').click()`);
+  await sleep(100);
+  check(`${label}: chart window switches`, (await p.ev(text("#price-chart"))).includes("in 5M"));
+  await p.ev(`document.querySelector("#price-chart")?.scrollIntoView({ block: "start" })`);
+  await sleep(200);
+  await p.shot(`${label}-chart`);
   await p.shot(`${label}-token`);
   }
   const csp = await p.ev(`window.__csp`);

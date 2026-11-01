@@ -95,6 +95,39 @@ test("price change: format and colour", () => {
   assert.deepEqual(C.formatChange(null), { text: "–", cls: "flat" });
 });
 
+test("floor: stages, search and filters", () => {
+  const a = { name: "Doug", symbol: "DOUG", circuitId: 13, token: "0xAA", status: 2, progress: 100 };
+  const b = { name: "Half", symbol: "HLF", circuitId: 14, token: "0xBB", status: 0, progress: 50 };
+  const c = { name: "New one", symbol: "NEW", circuitId: 2, token: "0xCC", status: 0, progress: 3 };
+  const d = { name: "Full", symbol: "FUL", circuitId: 3, token: "0xDD", status: 1, progress: 100 };
+  const all = [a, b, c, d];
+  assert.deepEqual(all.map(C.floorStage), ["uni", "near", "new", "near"]);
+  assert.deepEqual(C.filterLaunches(all, "", "uni"), [a]);
+  assert.deepEqual(C.filterLaunches(all, "", "near"), [b, d]);
+  assert.deepEqual(C.filterLaunches(all, "", "live"), [b, c, d]);
+  assert.deepEqual(C.filterLaunches(all, "dou", "all"), [a]);
+  assert.deepEqual(C.filterLaunches(all, "$hlf", "all"), [b]);
+  assert.deepEqual(C.filterLaunches(all, "nand 2", "all"), [c]);
+  assert.deepEqual(C.filterLaunches(all, "13", "all"), [a]);
+  assert.deepEqual(C.filterLaunches(all, "0xcc", "all"), [c]);
+  assert.deepEqual(C.filterLaunches(all, "doug", "near"), []);
+});
+
+test("floor: sorting keeps rows without a value last", () => {
+  const rows = [{ v: 1 }, { v: null }, { v: 3 }];
+  assert.deepEqual(C.sortBy(rows, (r) => r.v, true).map((r) => r.v), [3, 1, null]);
+  assert.deepEqual(C.sortBy(rows, (r) => r.v, false).map((r) => r.v), [1, 3, null]);
+});
+
+test("chart: starts at the window, ends at the current price, and survives thin data", () => {
+  const line = C.chartLine([[100, 1], [900, 4]], 1000, 500, 2, 600, 200).split(" ");
+  assert.equal(line.length, 3);
+  assert.equal(line[0].split(",")[0], "0.0");
+  assert.equal(line[2].split(",")[0], "600.0");
+  assert.equal(C.chartLine([[100, 2]], 1000, 500, 2, 600, 200), "0.0,100.0 600.0,100.0"); // flat
+  assert.equal(C.chartLine([], 1000, 500, 2, 600, 200), null);
+});
+
 test("logos: only ipfs:// with a valid CID renders", () => {
   const hide = new Set();
   assert.equal(C.safeImage(`ipfs://${CID}`, null, hide), CID);

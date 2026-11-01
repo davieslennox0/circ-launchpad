@@ -154,6 +154,42 @@
     return { text: (pct > 0 ? "+" : "-") + n + "%", cls: pct > 0 ? "up" : "down" };
   }
 
-  return { priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
+  // Fab floor. Stage: just launched, close to the gate (half the curve sold, or complete), or on Uniswap.
+  function floorStage(L) { return L.status === 2 ? "uni" : L.status === 1 || L.progress >= 50 ? "near" : "new"; }
+  function filterLaunches(list, query, filter) {
+    const q = String(query || "").trim().toLowerCase().replace(/^\$/, "");
+    return list.filter((L) => {
+      if (filter === "live" && L.status === 2) return false;
+      if ((filter === "near" || filter === "uni") && floorStage(L) !== filter) return false;
+      if (!q) return true;
+      const id = String(L.circuitId);
+      return String(L.name).toLowerCase().includes(q) || String(L.symbol).toLowerCase().includes(q) || id === q || `nand ${id}` === q || `#${id}` === q || String(L.token).toLowerCase() === q;
+    });
+  }
+  // Sorts a copy. Rows with no value go last in either direction.
+  function sortBy(list, value, descending) {
+    const dir = descending ? -1 : 1;
+    return list.map((L) => [L, value(L)]).sort(([, a], [, b]) => {
+      const an = a === null || a === undefined, bn = b === null || b === undefined;
+      return an || bn ? an - bn : (a - b) * dir;
+    }).map(([L]) => L);
+  }
+  // Polyline for a price chart: the price at the window's start, what happened inside it, and the current price.
+  function chartLine(points, nowSec, windowSec, current, W, H) {
+    if (!points || !points.length || !(current > 0)) return null;
+    const start = nowSec - windowSec;
+    const inside = points.filter(([ts]) => ts > start);
+    const before = points.filter(([ts]) => ts <= start).pop();
+    const pts = [...(before ? [[start, before[1]]] : []), ...inside, [nowSec, current]];
+    const t0 = pts[0][0], span = Math.max(1, nowSec - t0), logs = pts.map(([, p]) => Math.log(p));
+    const lo = Math.min(...logs), hi = Math.max(...logs), pad = 8;
+    return pts.map(([ts], i) => {
+      const x = ((ts - t0) / span) * W;
+      const y = hi === lo ? H / 2 : pad + (1 - (logs[i] - lo) / (hi - lo)) * (H - 2 * pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+  }
+
+  return { floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
     recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength };
 });

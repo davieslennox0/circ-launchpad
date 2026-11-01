@@ -5,7 +5,7 @@
  * signed in the user's own wallet. */
 "use strict";
 const E = ethers;
-const { priceChange, formatChange, esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, guardBlocksLeft, recommendDirect, parseContainerRevert,
+const { floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, guardBlocksLeft, recommendDirect, parseContainerRevert,
   uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength } = CircCore;
 
 const CHAIN_ID = 196;
@@ -454,24 +454,6 @@ async function viewFloor() {
   const okb = state.prices.okbUsd, bemU = state.prices.bemUsd;
   const L = state.launches;
   const grad = L.filter((x) => x.status === 2).length;
-  const cells = [];
-  let k = 0;
-  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
-    const dx = c - 3.5, dy = r - 3.5, inside = dx * dx + dy * dy <= 17.5;
-    if (!inside) { cells.push(`<div class="die out"></div>`); continue; }
-    const x = L[k++];
-    if (!x) { cells.push(`<div class="die empty"></div>`); continue; }
-    const cls = ["die", "live", x.status === 2 ? "grad" : x.status === 1 ? "complete" : "", isBem(x.quote) ? "bem" : ""].join(" ");
-    cells.push(`<a class="${cls}" href="#/t/${x.token}" title="${esc(x.symbol)} · ${x.progress.toFixed(1)}% · ${usd(x.mcUsd)}${x.dev ? ` · Dev holds ${x.dev.pct.toFixed(1)}%` : ""}">
-      ${x.status === 2 ? "" : `<div class="fill" style="height:${Math.max(4, x.progress)}%"></div>`}<span class="sym">${esc(x.symbol.slice(0, 5))}</span></a>`);
-  }
-  const rows = L.map((x) => `<a class="row" href="#/t/${x.token}">
-      <div class="tok">${avatar(x)}<div><b>${esc(x.name)}</b><small>$${esc(x.symbol)} · ${circuitLabel(x)}</small></div></div>
-      <div class="mono">${usd(x.mcUsd)}<div class="muted" style="font-size:12px">${num(x.mcQuote, 2)} ${x.cfg.sym}</div><div class="bar mini" title="Curve sold: ${x.status ? "100" : x.progress.toFixed(1)}%"><div style="width:${x.status ? 100 : x.progress}%"></div></div></div>
-      <div class="chgs">${changes(x).map((c) => `<div class="chg ${c.cls}" data-l="${c.label}">${c.text}</div>`).join("")}</div>
-      <div class="status-cell">${pills(x)}${devPill(x)}</div>
-      <div class="mono muted" style="font-size:12px">${x.ts ? ago(x.ts) : ""}</div></a>`).join("");
-
   $("#app").innerHTML = `
   <section class="hero">
     <div>
@@ -497,14 +479,133 @@ async function viewFloor() {
     </div>
   </section>
   ${traceHtml(w, w.p0 * p.totalTokens * okb * 1.0001, okb, false).replace('class="trace"', 'class="trace" style="margin:8px 0 4px"')}
-  <div class="section-h" id="wafer"><h2>The wafer <span class="muted mono" style="font-size:13px;font-weight:400">${L.length} launches · ${grad} taped out${state.readFailed ? ` · ${state.readFailed} couldn't be read, refresh to retry` : ""}</span></h2>
-    <div class="legend"><span><i style="background:var(--orange)"></i>trading (fill = curve sold)</span><span><i style="background:var(--yellow)"></i>complete</span>
-    <span><i style="background:var(--green)"></i>taped out</span><span><i style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--blue)"></i>BEM · volatile quote</span></div></div>
+  <div class="section-h" id="wafer"><h2>The wafer <span class="muted mono" style="font-size:13px;font-weight:400">${L.length} launches · ${grad} taped out${state.readFailed ? ` · ${state.readFailed} couldn't be read` : ""}</span></h2></div>
+  <div class="stat-strip">
+    <div><b>${L.filter((x) => x.status === 0).length}</b><span>on the curve</span></div>
+    <div><b>${L.filter((x) => floorStage(x) === "near").length}</b><span>close to the gate</span></div>
+    <div><b>${grad}</b><span>on Uniswap</span></div>
+  </div>
+  <div class="floor-tools">
+    <input id="floor-q" type="search" placeholder="Search name, ticker or Nand number" aria-label="Search tokens" value="${esc(floor.q)}">
+    <div class="seg-tabs" role="tablist" aria-label="Filter">${FLOOR_FILTERS.map(([id, l]) => `<button data-filter="${id}" class="${floor.filter === id ? "on" : ""}">${l}</button>`).join("")}</div>
+    <div class="seg-tabs" role="tablist" aria-label="View">${FLOOR_VIEWS.map(([id, l]) => `<button data-view="${id}" class="${floor.view === id ? "on" : ""}">${l}</button>`).join("")}</div>
+  </div>
+  <div id="floor-view">${floorView()}</div>`;
+}
+
+// ---------------------------------------------------------------- fab floor views: the same real launches, drawn five ways
+const FLOOR_VIEWS = [["wafer", "Wafer"], ["table", "Table"], ["board", "Board"], ["gallery", "Gallery"], ["race", "Race"]];
+const FLOOR_FILTERS = [["all", "All"], ["live", "On the curve"], ["near", "Close to the gate"], ["uni", "On Uniswap"]];
+const floor = { view: (() => { try { return localStorage.getItem("circ.view") || "wafer"; } catch { return "wafer"; } })(), q: "", filter: "all", sort: "age", desc: true, col: "new" };
+const FLOOR_SORTS = {
+  age: (x) => x.ts || 0, mc: (x) => x.mcUsd, curve: (x) => (x.status ? 100 : x.progress),
+  ch5: (x) => priceChange(x.prices, Date.now() / 1000, 300, x.price), ch1h: (x) => priceChange(x.prices, Date.now() / 1000, 3600, x.price),
+};
+const curvePct = (x) => (x.status ? "100" : x.progress.toFixed(1));
+const chgCell = (x, i) => { const c = changes(x)[i]; return `<span class="chg ${c.cls}">${c.text}</span>`; };
+
+function floorView() {
+  const L = state.launches;
+  if (!L.length) return `<div class="empty-state"><b>The wafer is clean.</b>No launches yet.</div>`;
+  const list = filterLaunches(L, floor.q, floor.filter);
+  if (!list.length) return `<div class="empty-state"><b>Nothing matches${floor.q ? ` "${esc(floor.q)}"` : " this filter"}.</b>Try a ticker or a Nand number.</div>`;
+  return { table: floorTable, board: floorBoard, gallery: floorGallery, race: floorRace }[floor.view]?.(list) || floorWafer(list);
+}
+
+function floorWafer(L) {
+  const cells = [];
+  let k = 0;
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const dx = c - 3.5, dy = r - 3.5, inside = dx * dx + dy * dy <= 17.5;
+    if (!inside) { cells.push(`<div class="die out"></div>`); continue; }
+    const x = L[k++];
+    if (!x) { cells.push(`<div class="die empty"></div>`); continue; }
+    const cls = ["die", "live", x.status === 2 ? "grad" : x.status === 1 ? "complete" : "", isBem(x.quote) ? "bem" : ""].join(" ");
+    cells.push(`<a class="${cls}" href="#/t/${x.token}" title="${esc(x.symbol)} · ${x.progress.toFixed(1)}% · ${usd(x.mcUsd)}${x.dev ? ` · Dev holds ${x.dev.pct.toFixed(1)}%` : ""}">
+      ${x.status === 2 ? "" : `<div class="fill" style="height:${Math.max(4, x.progress)}%"></div>`}<span class="sym">${esc(x.symbol.slice(0, 5))}</span></a>`);
+  }
+  const rows = L.map((x) => `<a class="row" href="#/t/${x.token}">
+      <div class="tok">${avatar(x)}<div><b>${esc(x.name)}</b><small>$${esc(x.symbol)} · ${circuitLabel(x)}</small></div></div>
+      <div class="mono">${usd(x.mcUsd)}<div class="muted" style="font-size:12px">${num(x.mcQuote, 2)} ${x.cfg.sym}</div><div class="bar mini" title="Curve sold: ${curvePct(x)}%"><div style="width:${x.status ? 100 : x.progress}%"></div></div></div>
+      <div class="chgs">${changes(x).map((c) => `<div class="chg ${c.cls}" data-l="${c.label}">${c.text}</div>`).join("")}</div>
+      <div class="status-cell">${pills(x)}${devPill(x)}</div>
+      <div class="mono muted" style="font-size:12px">${x.ts ? ago(x.ts) : ""}</div></a>`).join("");
+  return `<div class="legend" style="margin-bottom:14px"><span><i style="background:var(--orange)"></i>trading (fill = curve sold)</span><span><i style="background:var(--yellow)"></i>complete</span>
+    <span><i style="background:var(--green)"></i>taped out</span><span><i style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--blue)"></i>BEM · volatile quote</span></div>
   <div class="wafer-wrap">
     <div class="wafer"><div class="grid">${cells.join("")}</div></div>
-    <div>${L.length ? `<div class="list"><div class="row head"><div>Token</div><div>Market cap</div><div class="chgs">${CHANGE_WINDOWS.map(([l]) => `<div class="chg">${l}</div>`).join("")}</div><div>Status · Dev</div><div>Age</div></div>${rows}</div>`
-      : `<div class="empty-state"><b>The wafer is clean.</b>No launches yet.</div>`}</div>
+    <div><div class="list"><div class="row head"><div>Token</div><div>Market cap</div><div class="chgs">${CHANGE_WINDOWS.map(([l]) => `<div class="chg">${l}</div>`).join("")}</div><div>Status · Dev</div><div>Age</div></div>${rows}</div></div>
   </div>`;
+}
+
+function floorTable(L) {
+  const sorted = sortBy(L, FLOOR_SORTS[floor.sort], floor.desc);
+  const head = (id, label, cls = "") => `<button class="${cls}" data-sort="${id}" aria-sort="${floor.sort === id ? (floor.desc ? "descending" : "ascending") : "none"}">${label}${floor.sort === id ? (floor.desc ? " ↓" : " ↑") : ""}</button>`;
+  return `<div class="list f-table"><div class="f-row f-head"><div>Token</div>${head("age", "Age", "c-age")}${head("mc", "Market cap", "r")}${head("ch5", "5M", "r")}${head("ch1h", "1H", "r")}${head("curve", "Curve", "c-curve")}<div class="c-status">Status</div></div>
+    ${sorted.map((x) => `<a class="f-row" href="#/t/${x.token}"><div class="tok">${avatar(x)}<div><b>${esc(x.symbol)}</b><small>${esc(x.name)} · ${circuitLabel(x)}</small></div></div>
+      <div class="c-age mono muted">${x.ts ? ago(x.ts) : ""}</div><div class="r mono">${usd(x.mcUsd)}</div><div class="r">${chgCell(x, 0)}</div><div class="r">${chgCell(x, 2)}</div>
+      <div class="c-curve"><div class="bar"><div style="width:${x.status ? 100 : x.progress}%"></div></div><small class="mono muted">${curvePct(x)}%</small></div>
+      <div class="c-status">${pills(x)}</div></a>`).join("")}</div>`;
+}
+
+function floorBoard(L) {
+  const cols = [["new", "Just launched", "Under half the curve sold"], ["near", "Close to the gate", "Half sold or more, about to tape out"], ["uni", "On Uniswap", "Taped out, liquidity locked"]];
+  if (!floor.colPicked) floor.col = cols.map(([id]) => id).find((id) => L.some((x) => floorStage(x) === id)) || "new"; // on a phone, open a column that has tokens
+  const card = (x) => `<a class="b-card" href="#/t/${x.token}"><div class="tok">${avatar(x)}<div><b>${esc(x.symbol)}</b><small>${esc(x.name)} · ${circuitLabel(x)}</small></div></div>
+    <div class="b-nums"><span class="mono">${usd(x.mcUsd)}</span>${chgCell(x, 2)}</div><div class="bar"><div style="width:${x.status ? 100 : x.progress}%"></div></div></a>`;
+  return `<div class="seg-tabs b-tabs">${cols.map(([id, t]) => `<button data-col="${id}" class="${floor.col === id ? "on" : ""}">${t}</button>`).join("")}</div>
+  <div class="board">${cols.map(([id, title, hint]) => { const c = L.filter((x) => floorStage(x) === id);
+    return `<section class="b-col ${floor.col === id ? "on" : ""}"><h3>${title} <span class="muted mono">${c.length}</span></h3><p class="muted">${hint}</p>${c.map(card).join("") || `<div class="muted b-none">None right now.</div>`}</section>`; }).join("")}</div>`;
+}
+
+function floorGallery(L) {
+  const soon = sortBy(L.filter((x) => x.status !== 2 && floorStage(x) === "near"), (x) => x.progress, true).slice(0, 6);
+  return `${soon.length ? `<h3 class="g-sec">Graduating soon</h3><div class="g-strip">${soon.map((x) => `<a class="g-mini" href="#/t/${x.token}">${avatar(x)}<span><b>${esc(x.symbol)}</b><small class="mono muted">${curvePct(x)}% · ${usd(x.mcUsd)}</small></span></a>`).join("")}</div>` : ""}
+  <div class="g-grid">${L.map((x) => `<a class="g-card" href="#/t/${x.token}">${avatar(x, "g-logo")}<div class="g-body"><div class="g-name"><b>${esc(x.name)}</b><span class="mono">${usd(x.mcUsd)}</span></div>
+    <small class="muted">$${esc(x.symbol)} · ${circuitLabel(x)}</small><div class="bar"><div style="width:${x.status ? 100 : x.progress}%"></div></div>
+    <div class="g-foot">${pills(x)}${chgCell(x, 2)}</div></div></a>`).join("")}</div>`;
+}
+
+function floorRace(L) {
+  const racing = sortBy(L.filter((x) => x.status !== 2), (x) => x.progress, true), done = L.filter((x) => x.status === 2);
+  const lane = (x) => { const pct = x.status ? 100 : x.progress;
+    return `<a class="lane" href="#/t/${x.token}"><span class="who"><b>${esc(x.symbol)}</b><small class="muted">${circuitLabel(x)}</small></span>
+      <span class="road" aria-label="${pct.toFixed(1)} percent to the flag"><span class="run" style="width:${pct}%"></span><span class="flag"></span><span class="racer" style="left:${pct}%">${avatar(x)}</span></span>
+      <span class="mono r">${usd(x.mcUsd)}<small class="muted">${curvePct(x)}%</small></span></a>`; };
+  return `<div class="race-head"><h3>The race to Uniswap</h3><p class="muted">Every buy moves a token forward. At the flag it tapes out into a locked Uniswap v4 pool.</p></div>
+  <div class="track">${racing.map(lane).join("") || `<div class="muted b-none">Nobody on the track right now.</div>`}</div>
+  ${done.length ? `<h3 class="g-sec">Finished</h3><div class="track done">${done.map(lane).join("")}</div>` : ""}`;
+}
+
+function showFloorView() { const v = $("#floor-view"); if (v) v.innerHTML = floorView(); }
+function setSegment(attr, value) { document.querySelectorAll(`[${attr}]`).forEach((b) => b.classList.toggle("on", b.getAttribute(attr) === value)); }
+document.addEventListener("input", (e) => { if (e.target.id === "floor-q") { floor.q = e.target.value; showFloorView(); } });
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-view],[data-filter],[data-sort],[data-col],[data-frame]");
+  if (!t) return;
+  if (t.dataset.view) { floor.view = t.dataset.view; try { localStorage.setItem("circ.view", floor.view); } catch {} setSegment("data-view", floor.view); }
+  else if (t.dataset.filter) { floor.filter = t.dataset.filter; setSegment("data-filter", floor.filter); }
+  else if (t.dataset.sort) { floor.desc = floor.sort === t.dataset.sort ? !floor.desc : true; floor.sort = t.dataset.sort; }
+  else if (t.dataset.col) { floor.col = t.dataset.col; floor.colPicked = true; }
+  else if (t.dataset.frame) { const c = $("#price-chart"); const L = state.launches.find((x) => x.token === c?.dataset.token); if (L) c.innerHTML = priceChart(L, t.dataset.frame); return; }
+  showFloorView();
+});
+
+// ---------------------------------------------------------------- token page: price chart and signal wire
+function priceChart(L, frame = "24H") {
+  const w = CHANGE_WINDOWS.find(([l]) => l === frame) || CHANGE_WINDOWS[3], W = 600, H = 180;
+  const line = chartLine(L.prices, Date.now() / 1000, w[1], L.price, W, H);
+  const c = formatChange(priceChange(L.prices, Date.now() / 1000, w[1], L.price));
+  return `<h3>Price <small class="chg ${c.cls}">${c.text} in ${w[0]}</small></h3>
+    ${line ? `<svg class="p-chart ${c.cls}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Price over the last ${w[0]}"><polyline points="${line}"/></svg>` : `<div class="muted b-none">No price history yet.</div>`}
+    <div class="seg-tabs">${CHANGE_WINDOWS.map(([l]) => `<button data-frame="${l}" class="${l === w[0] ? "on" : ""}">${l}</button>`).join("")}</div>`;
+}
+function signalWire(L) {
+  const pct = L.status ? 100 : L.progress, x = 4 + (264 * pct) / 100, done = L.status === 2;
+  return `<svg class="wire ${done ? "done" : ""}" viewBox="0 0 320 28" role="img" aria-label="Signal ${pct.toFixed(1)} percent of the way to the gate">
+    <line class="w-off" x1="4" y1="14" x2="268" y2="14"/><line class="w-on" x1="4" y1="14" x2="${x.toFixed(1)}" y2="14"/><circle class="w-dot" cx="${x.toFixed(1)}" cy="14" r="4.5"/>
+    <path class="w-gate" d="M272 4h12a10 10 0 0 1 0 20h-12z"/><circle class="w-not" cx="298.5" cy="14" r="3.5"/><line class="w-out" x1="302" y1="14" x2="318" y2="14"/></svg>
+    <p class="muted" style="margin:8px 0 0;font-size:12.5px">${done ? "Signal reached the gate. This token trades on Uniswap." : L.status === 1 ? "Signal reached the gate. Tape-out is next." : `${pct.toFixed(1)}% of the way to the gate.`}</p>`;
 }
 
 function circuitLabel(x) {
@@ -566,6 +667,8 @@ async function viewToken(addr) {
           : `<b>${num(units(L.realQuote, qd), 3)}</b><small>of ${num(units(cfg.raise, qd), 2)} ${sym}</small>`}</div>
         <div><label>Curve sold</label><b>${L.status ? "100" : L.progress.toFixed(2)}%</b><small>${num(units(L.tokensLeft, 18), 2)} left</small></div>
       </div></div>
+      <div class="card" id="price-chart" data-token="${L.token}">${priceChart(L)}</div>
+      <div class="card"><h3>Signal to the gate</h3>${signalWire(L)}</div>
       <div class="card"><h3>Bonding curve <small>x·y=k, virtual reserves read from CurvePad</small></h3>${curveSvg(L)}</div>
       <div class="card"><h3>Trades on the curve <small>${trades.length ? "latest first" : ""}</small></h3>
         <div class="tape">${trades.length ? trades.slice(0, 30).map((t) => `<div class="t">
