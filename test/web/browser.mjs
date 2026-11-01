@@ -75,7 +75,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     for (const v of ["table", "board", "race"]) {
       await p.ev(`document.querySelector('[data-view="${v}"]').click()`);
       await sleep(150);
-      check(`${label}: ${v} view shows real tokens`, /DOUG/.test(await p.ev(text("#floor-view"))));
+      check(`${label}: ${v} view shows real tokens`, /DOUG|FRUST/.test(await p.ev(text("#floor-view"))));
       check(`${label}: ${v} view has no sideways scrolling`, await p.ev(`document.documentElement.scrollWidth <= innerWidth`));
       await p.ev(`document.querySelector(".floor-tools").scrollIntoView({ block: "start" }); scrollBy(0, -70)`);
       await sleep(150);
@@ -99,6 +99,8 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     await p.ev(`document.querySelector('[data-filter="all"]').click()`);
     await sleep(100);
   }
+  check(`${label}: progress line is gone from the homepage`, !(await p.ev(`document.querySelector(".trace")`)));
+  if (STAGING) check(`${label}: ticker shows a launch`, /NEW/.test(await p.ev(`document.querySelector("#ticker")?.textContent || ""`)));
   check(`${label}: no gallery button`, !(await p.ev(`document.querySelector('[data-view="gallery"]')`)));
   check(`${label}: king of the hill is on the floor`, /King of the hill/i.test(await p.ev(text("#app"))));
   if (STAGING) { // every TEST token is on Uniswap, so draw the card with one put back on the curve, in this page only
@@ -187,7 +189,11 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   const page = await p.ev(text("#app"));
   check(`${label}: token page has the bonding curve, without its removed text, wire or progress line`, /Bonding curve/.test(page) && !/x·y=k|Signal to the gate/.test(page) && !(await p.ev(`document.querySelector("#app .trace, svg.wire")`)));
   const tp = await p.ev(text("#app"));
-  check(`${label}: token details and fee split read from the chain`, /Token details/.test(tp) && /Where the 1% fee goes/.test(tp) && /50%/.test(tp) && /30%/.test(tp) && /20%/.test(tp));
+  check(`${label}: token details shown, fee card gone`, /Token details/.test(tp) && !/Where the/.test(tp));
+  check(`${label}: copy buttons use the icon`, await p.ev(`[...document.querySelectorAll(".copy, .copy-ca")].every((b) => b.querySelector("svg.ic") && !/copy/i.test(b.innerText))`));
+  await p.ev(`(() => { window.__fetch = fetch; window.fetch = async (u, o) => { const r = await window.__fetch(u, o); if (!/data\\/index-/.test(String(u))) return r; const d = await r.json(); const L = d.launches[location.hash.slice(4).toLowerCase()]; if (L) L.trades.push({ b: 1, i: 0, ts: Math.floor(Date.now() / 1000), tx: "0x" + "ab".repeat(32), who: "0x" + "11".repeat(20), buy: true, q: "1000000000000000", t: "123450000000000000000000000", fee: "0" }); return new Response(JSON.stringify(d)); }; })()`);
+  check(`${label}: a new trade appears without a refresh`, await p.until(`${text("#tape-card")}.includes("123.45M")`, 15000));
+  await p.ev(`(window.fetch = window.__fetch, 0)`);
   check(`${label}: contract address can be copied`, await p.ev(`document.querySelector(".copy-ca").dataset.copy.toLowerCase() === location.hash.slice(4).toLowerCase()`));
   await p.ev(`scrollTo(0, 0)`);
   await sleep(300);

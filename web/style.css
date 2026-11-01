@@ -116,24 +116,6 @@ h1 em { font-style: normal; color: var(--muted); }
 .spec .src { margin-top: 14px; font: 11px var(--mono); color: var(--dim); word-break: break-all; }
 
 /* ---------- the trace (bonding curve progress, $launch -> $grad) ---------- */
-.trace { position: relative; padding: 26px 0 30px; }
-.trace .rail { height: 2px; background: var(--line-strong); position: relative; }
-.trace .lit { position: absolute; left: 0; top: 0; height: 2px; background: linear-gradient(90deg, var(--orange), var(--hub)); }
-.trace .pad {
-  position: absolute; top: -7px; width: 16px; height: 16px; border-radius: 4px;
-  border: 2px solid var(--line-strong); background: var(--bg);
-}
-.trace .pad.l { left: -8px; border-color: var(--orange); }
-.trace .pad.r { right: -8px; }
-.trace .pad.r.done { border-color: var(--green); background: var(--green); }
-.trace .dot {
-  position: absolute; top: -6px; width: 14px; height: 14px; border-radius: 50%; background: var(--hub);
-  box-shadow: 0 0 0 4px var(--hub-soft); transform: translateX(-7px);
-}
-.trace .lab { position: absolute; top: 16px; font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; }
-.trace .lab.l { left: -8px; }
-.trace .lab.r { right: -8px; text-align: right; }
-.trace .lab.c { transform: translateX(-50%); color: var(--ink); top: -26px; }
 
 /* ---------- wafer ---------- */
 .section-h { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 40px 0 16px; flex-wrap: wrap; }
@@ -363,7 +345,6 @@ html, body { overflow-x: clip; }
   nav.links.mobile { display: flex; justify-content: space-around; margin: 0; padding: 4px 8px 6px; border-top: 1px solid var(--line); }
   nav.links.mobile a { min-height: 44px; display: inline-flex; align-items: center; }
   header.top .wrap { gap: 8px; }
-  .trace { margin-inline: 8px; }
 }
 @media (max-width: 520px) {
   header.top .wrap { height: 56px; }
@@ -511,19 +492,8 @@ dd.addr { display: flex; gap: 8px; align-items: center; justify-content: flex-en
 .ticker .mono { font-size: 11.5px; }
 .ticker .b { color: #8FBF9F; font: 11.5px var(--mono); }
 .ticker .s { color: #DE9A92; font: 11.5px var(--mono); }
+.ticker .n { color: var(--amber); font: 11.5px var(--mono); }
 @keyframes ticker { to { transform: translateX(-50%); } }
-
-/* Fee split */
-.fee-bar { display: flex; gap: 2px; height: 8px; border-radius: 6px; overflow: hidden; margin-bottom: 12px; }
-.fee-bar i:nth-child(1) { background: var(--hub); }
-.fee-bar i:nth-child(2) { background: var(--accent-dim, var(--muted)); }
-.fee-bar i:nth-child(3) { background: var(--amber); }
-.fee-parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.fee-part { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; min-width: 0; }
-.fee-top { display: flex; flex-direction: column; gap: 2px; }
-.fee-top b { font: 500 15px var(--mono); color: var(--ink); }
-.fee-top span { color: var(--muted); }
-.fee-part a { font-size: 11.5px; text-decoration: none; }
 
 /* Trade button that stays in reach on a phone */
 .trade-dock { display: none; }
@@ -531,9 +501,6 @@ dd.addr { display: flex; gap: 8px; align-items: center; justify-content: flex-en
   .btn.trade-dock { display: block; position: fixed; left: 16px; right: 16px; bottom: 14px; width: auto; z-index: 40; box-shadow: 0 8px 28px rgba(0,0,0,.6); }
   .btn.trade-dock.away { display: none; }
   .stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .fee-parts { grid-template-columns: minmax(0, 1fr); }
-  .fee-part { flex-direction: row; justify-content: space-between; align-items: center; }
-  .fee-top { flex-direction: row; gap: 8px; align-items: baseline; }
 }
 
 /* Loading */
@@ -548,3 +515,6 @@ dd.addr { display: flex; gap: 8px; align-items: center; justify-content: flex-en
 
 .row .tok > div:last-child, .f-row .tok > div:last-child { min-width: 0; }
 .row .tok small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+svg.ic { display: inline-block; vertical-align: -2px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.copy { line-height: 0; padding: 5px 6px; }

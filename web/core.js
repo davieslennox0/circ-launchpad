@@ -218,9 +218,10 @@
     const ch = priceChange(L.prices, nowSec, 3600, L.price);
     return n + (ch === null ? 0 : Math.min(Math.abs(ch), 100) / 10);
   }
-  // Latest curve trades across all tokens, newest first.
+  // Latest launches and curve trades across all tokens, newest first. A launch has no `t`.
   function recentActivity(list, limit) {
-    return list.flatMap((L) => (L.trades || []).map((t) => ({ L, t }))).sort((a, b) => b.t.ts - a.t.ts).slice(0, limit);
+    return list.flatMap((L) => [...(L.ts ? [{ L, ts: L.ts }] : []), ...(L.trades || []).map((t) => ({ L, t, ts: t.ts }))])
+      .sort((a, b) => b.ts - a.ts).slice(0, limit);
   }
 
   return { lastTradeTs, heat, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,

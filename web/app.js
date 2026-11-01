@@ -417,17 +417,6 @@ function setBanner() {
   $("#foot-pad").innerHTML = `CurvePad <a class="mono" href="${EXPLORER}/address/${state.pad?.addr || INSTANCES[state.inst].pad}" target="_blank" rel="noopener">${short(INSTANCES[state.inst].pad)}</a>`;
 }
 
-function traceHtml(cfg, mcUsdNow, qUsd, done) {
-  const lo = cfg.p0 * state.pad.totalTokens * qUsd, hi = cfg.pEnd * state.pad.totalTokens * qUsd;
-  const x = Math.max(0, Math.min(1, (mcUsdNow - lo) / (hi - lo)));
-  return `<div class="trace">
-    <div class="rail"><div class="lit" style="width:${x * 100}%"></div>
-      <div class="pad l"></div><div class="pad r ${done ? "done" : ""}"></div>
-      <div class="dot" style="left:${x * 100}%"></div>
-      <div class="lab c mono" style="left:${x * 100}%">${usd(mcUsdNow)}</div>
-      <div class="lab l">launch ${usd(lo)}</div><div class="lab r">tape-out ${usd(hi)}</div>
-    </div></div>`;
-}
 
 const safeImage = (uri, token) => safeImageCore(uri, token, HIDE);
 function ipfsImg(rel) { // walks the gateway list on error, then removes itself so the initials show (handler at the end of this file)
@@ -478,7 +467,6 @@ async function viewFloor() {
       <div class="src">CurvePad ${p.addr} · OKB $${okb.toFixed(2)} from the USD₮0/WOKB pool</div>
     </div>
   </section>
-  ${traceHtml(w, w.p0 * p.totalTokens * okb * 1.0001, okb, false).replace('class="trace"', 'class="trace" style="margin:8px 0 4px"')}
   ${tickerHtml()}
   <div class="section-h" id="wafer"><h2>The wafer <span class="muted mono" style="font-size:13px;font-weight:400">${L.length} launches · ${grad} taped out${state.readFailed ? ` · ${state.readFailed} couldn't be read` : ""}</span></h2></div>
   ${kingCard()}
@@ -596,25 +584,70 @@ document.addEventListener("keydown", (e) => {
   const q = $("#floor-q");
   if (q) { e.preventDefault(); q.focus(); }
 });
-// The floor keeps itself current while it's on screen. Only the parts that change are redrawn, so search keeps its focus.
-const FLOOR_REFRESH_MS = 30000;
-setInterval(async () => {
-  if (document.hidden || !booted || !$("#floor-view")) return;
+// Pages keep themselves current. Only the parts that change are redrawn, so search, typed amounts and scroll position survive.
+let tickerSig = "";
+function drawFloorLive() {
+  if (!$("#floor-view")) return;
+  const king = $("#king"); if (king) king.outerHTML = kingCard();
+  const stats = $("#stat-strip"); if (stats) stats.outerHTML = statStrip();
+  const before = tickerSig, html = tickerHtml(); // a redraw restarts the scroll, so only swap the ticker when it changed
+  if (html && tickerSig !== before) { const tick = $("#ticker"); if (tick) tick.outerHTML = html; }
+  showFloorView();
+}
+async function drawTokenLive(L) {
+  const fresh = await readLaunch(L);
+  if (!fresh) return;
+  const moved = fresh.status !== L.status;
+  Object.assign(L, fresh);
+  if (moved) return route(); // the trade panel changes when the curve fills or tapes out
+  const set = (id, html) => { const e = $(id); if (e) e.innerHTML = html; };
+  set("#tok-meta", tokMeta(L)); set("#tok-stats", tokStats(L)); set("#tape-card", tokTape(L)); set("#price-chart", priceChart(L));
+}
+// The indexer's file is on our own server and costs no RPC, so it can be read often. The chain is read only when it changed.
+const LIVE_POLL_MS = 5000, FLOOR_REFRESH_MS = 30000;
+let polling = false;
+async function pollIndex() {
+  if (polling || document.hidden || !booted) return;
+  polling = true;
   try {
-    await loadLaunches();
-    const king = $("#king"); if (king) king.outerHTML = kingCard();
-    const tick = $("#ticker"); if (tick) tick.outerHTML = tickerHtml();
-    const stats = $("#stat-strip"); if (stats) stats.outerHTML = statStrip();
-    showFloorView();
-  } catch {} // the next pass tries again
+    const r = await fetch(`data/index-${state.inst}.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!r.ok) return;
+    const d = await r.json();
+    INDEX = d;
+    const known = new Map(state.launches.map((x) => [x.token.toLowerCase(), x]));
+    const changed = new Set();
+    let added = false;
+    for (const [k, L] of Object.entries(d.launches || {})) {
+      const x = known.get(k.toLowerCase());
+      if (!x) { added = true; continue; }
+      const had = x.trades || [], has = L.trades || [];
+      if (had.length !== has.length || had[had.length - 1]?.tx !== has[has.length - 1]?.tx || (x.prices || []).length !== (L.prices || []).length || !!x.graduated !== !!L.graduated) {
+        x.trades = has; x.prices = L.prices; x.graduated = L.graduated;
+        changed.add(k.toLowerCase());
+      }
+    }
+    if (!added && !changed.size) return;
+    const tok = $("#tape-card")?.dataset.token?.toLowerCase();
+    if ($("#floor-view")) { await loadLaunches(); drawFloorLive(); }
+    else if (added) await loadLaunches();
+    if (tok && changed.has(tok)) { const L = state.launches.find((x) => x.token.toLowerCase() === tok); if (L) await drawTokenLive(L); }
+  } catch {} finally { polling = false; } // the next pass tries again
+}
+setInterval(pollIndex, LIVE_POLL_MS);
+setInterval(async () => { // prices move with OKB too, and a site-found launch may not be indexed yet
+  if (document.hidden || !booted || !$("#floor-view") || polling) return;
+  try { await loadLaunches(); drawFloorLive(); } catch {}
 }, FLOOR_REFRESH_MS);
 
 function tickerHtml() {
-  const items = recentActivity(state.launches, 12);
+  const items = recentActivity(state.launches, 14);
+  tickerSig = items.map((a) => a.L.token + a.ts + (a.t ? a.t.tx : "")).join();
   if (!items.length) return `<div id="ticker" hidden></div>`;
-  const one = (a) => `<a href="#/t/${a.L.token}"><span class="${a.t.buy ? "b" : "s"}">${a.t.buy ? "BUY" : "SELL"}</span> ${esc(a.L.symbol)} <span class="mono muted">${num(units(BigInt(a.t.q), a.L.cfg.dec), 4)} ${a.L.cfg.sym} · ${ago(a.t.ts)}</span></a>`;
+  const one = (a) => a.t
+    ? `<a href="#/t/${a.L.token}"><span class="${a.t.buy ? "b" : "s"}">${a.t.buy ? "BUY" : "SELL"}</span> ${esc(a.L.symbol)} <span class="mono muted">${num(units(BigInt(a.t.q), a.L.cfg.dec), 4)} ${a.L.cfg.sym} · ${ago(a.ts)}</span></a>`
+    : `<a href="#/t/${a.L.token}"><span class="n">NEW</span> ${esc(a.L.symbol)} <span class="mono muted">launched · ${ago(a.ts)}</span></a>`;
   const run = items.map(one).join("");
-  return `<div id="ticker" class="ticker" aria-label="Latest trades"><div class="ticker-run">${run}<span aria-hidden="true" class="ticker-dup">${run}</span></div></div>`;
+  return `<div id="ticker" class="ticker" aria-label="Latest launches and trades"><div class="ticker-run">${run}<span aria-hidden="true" class="ticker-dup">${run}</span></div></div>`;
 }
 function statStrip() {
   const L = state.launches, day = Date.now() / 1000 - 86400;
@@ -645,22 +678,46 @@ document.addEventListener("click", (e) => {
   showFloorView();
 });
 
-// ---------------------------------------------------------------- token page: details, fee split, price chart
-const addrRow = (label, a) => `<dt>${label}</dt><dd class="addr"><a class="mono" href="${EXPLORER}/address/${a}" target="_blank" rel="noopener">${short(a)} ↗</a><button class="copy" data-copy="${a}" aria-label="Copy ${label}">Copy</button></dd>`;
+// ---------------------------------------------------------------- token page: details, price chart
+const COPY_ICON = `<svg class="ic" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></svg>`;
+const addrRow = (label, a) => `<dt>${label}</dt><dd class="addr"><a class="mono" href="${EXPLORER}/address/${a}" target="_blank" rel="noopener">${short(a)} ↗</a><button class="copy" data-copy="${a}" aria-label="Copy ${label}" title="Copy">${COPY_ICON}</button></dd>`;
+function tokMeta(L) {
+  return `${starBtn(L)}<button class="pill copy-ca" data-copy="${L.token}" aria-label="Copy contract address" title="Copy contract address">CA ${short(L.token)} ${COPY_ICON}</button>${pills(L)}${devPill(L)}${changes(L).map((c) => `<span class="pill chg ${c.cls}">${c.label} ${c.text}</span>`).join("")}<span class="pill">${circuitLabel(L)}</span>
+      <a class="pill" href="${EXPLORER}/token/${L.token}" target="_blank" rel="noopener">${short(L.token)} ↗</a>`;
+}
+function tokStats(L) {
+  const cfg = L.cfg, qd = cfg.dec, sym = cfg.sym;
+  return `<div><label>Market cap</label><b>${usd(L.mcUsd)}</b><small>${num(L.mcQuote, 3)} ${sym}</small></div>
+        <div><label>Price</label><b>${L.price.toPrecision(3)}</b><small>${sym} per token${L.status === 2 ? " · v4 pool" : ""}</small></div>
+        <div><label>Raised</label>${L.status === 2
+          ? `<b>${Number(units(cfg.raise, qd).toPrecision(3))} ${sym}</b><small>raised, moved to the Uniswap pool</small>`
+          : `<b>${num(units(L.realQuote, qd), 3)}</b><small>of ${num(units(cfg.raise, qd), 2)} ${sym}</small>`}</div>
+        <div><label>Curve sold</label><b>${L.status ? "100" : L.progress.toFixed(2)}%</b><small>${num(units(L.tokensLeft, 18), 2)} left</small></div>`;
+}
+function tokTape(L) {
+  const qd = L.cfg.dec, sym = L.cfg.sym;
+  const trades = (INDEX?.launches?.[L.token.toLowerCase()]?.trades || L.trades || []).slice().reverse();
+  return `<h3>Trades on the curve <small>${trades.length ? "latest first" : ""}</small></h3>
+        <div class="tape">${trades.length ? trades.slice(0, 30).map((t) => `<div class="t">
+          <span class="${t.buy ? "b" : "s"}">${t.buy ? "BUY" : "SELL"}</span>
+          <span>${num(units(BigInt(t.t), 18), 2)}</span><span>${num(units(BigInt(t.q), qd), 5)} ${sym}</span>
+          <a class="hide-m" href="${EXPLORER}/address/${t.who}" target="_blank" rel="noopener">${short(t.who)}</a>
+          <a href="${EXPLORER}/tx/${t.tx}" target="_blank" rel="noopener">${ago(t.ts)} ↗</a></div>`).join("")
+          : `<div class="muted">No curve trades yet.</div>`}</div>`;
+}
 function tokenInfo(L) {
-  const p = state.pad, [c, pr, si] = p.split, fee = Number(p.feeBps) / 100;
-  const part = (share, label, a) => `<div class="fee-part"><div class="fee-top"><b>${share / 100}%</b><span>${label}</span></div>${a ? `<a class="mono muted" href="${EXPLORER}/address/${a}" target="_blank" rel="noopener">${short(a)} ↗</a>` : ""}</div>`;
+  const p = state.pad;
   return `<div class="card"><h3>Token details</h3><dl class="kv">
       ${addrRow("Contract", L.token)}
       ${L.creator ? addrRow("Launched by", L.creator) : ""}
       <dt>Wired to</dt><dd>${circuitLabel(L)}</dd>
       ${L.ts ? `<dt>Launched</dt><dd>${new Date(L.ts * 1000).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })}</dd>` : ""}
       <dt>Supply</dt><dd>${num(p.totalTokens, 0)}</dd>
-    </dl></div>
-    <div class="card"><h3>Where the ${fee}% fee goes</h3><div class="fee-bar" role="img" aria-label="${c / 100}% Container, ${pr / 100}% protocol, ${si / 100}% sink"><i style="width:${c / 100}%"></i><i style="width:${pr / 100}%"></i><i style="width:${si / 100}%"></i></div>
-      <div class="fee-parts">${part(c, "This token's Container", L.container)}${part(pr, "Protocol", p.protocol)}${part(si, "Sink", p.sink)}</div></div>`;
+    </dl></div>`;
 }
-function priceChart(L, frame = "24H") {
+let chartFrame = "24H";
+function priceChart(L, frame = chartFrame) {
+  chartFrame = frame;
   const w = CHANGE_WINDOWS.find(([l]) => l === frame) || CHANGE_WINDOWS[3], W = 600, H = 180;
   const line = chartLine(L.prices, Date.now() / 1000, w[1], L.price, W, H);
   const c = formatChange(priceChange(L.prices, Date.now() / 1000, w[1], L.price));
@@ -707,36 +764,21 @@ async function viewToken(addr) {
   const cfg = L.cfg, qUsd = quoteUsd(L.quote), qd = cfg.dec, sym = cfg.sym;
   const head = await rp.getBlockNumber();
   const guardLeft = guardBlocksLeft(L.launchBlock, state.pad.guard, head);
-  const trades = (INDEX?.launches?.[L.token.toLowerCase()]?.trades || L.trades || []).slice().reverse();
   const grad = INDEX?.launches?.[L.token.toLowerCase()]?.graduated;
 
   $("#app").innerHTML = `
   <div class="tp-head">${avatar(L)}
     <div><h1>${esc(L.name)} <span class="muted" style="font-weight:400">$${esc(L.symbol)}</span></h1>
-    <div class="meta">${starBtn(L)}<button class="pill copy-ca" data-copy="${L.token}" aria-label="Copy contract address">CA ${short(L.token)} · Copy</button>${pills(L)}${devPill(L)}${changes(L).map((c) => `<span class="pill chg ${c.cls}">${c.label} ${c.text}</span>`).join("")}<span class="pill">${circuitLabel(L)}</span>
-      <a class="pill" href="${EXPLORER}/token/${L.token}" target="_blank" rel="noopener">${short(L.token)} ↗</a></div></div>
+    <div class="meta" id="tok-meta">${tokMeta(L)}</div></div>
   </div>
   ${isBem(L.quote) ? `<div class="note vol">Volatile quote: this launch is priced in BEM. Its tape-out target is fixed at ${num(units(cfg.raise, 8), 2)} BEM, so the USD value of the target (and of every price here) moves with BEM.</div>` : ""}
   <div class="cols">
     <div>
-      <div class="card"><div class="stats">
-        <div><label>Market cap</label><b>${usd(L.mcUsd)}</b><small>${num(L.mcQuote, 3)} ${sym}</small></div>
-        <div><label>Price</label><b>${L.price.toPrecision(3)}</b><small>${sym} per token${L.status === 2 ? " · v4 pool" : ""}</small></div>
-        <div><label>Raised</label>${L.status === 2
-          ? `<b>${Number(units(cfg.raise, qd).toPrecision(3))} ${sym}</b><small>raised, moved to the Uniswap pool</small>`
-          : `<b>${num(units(L.realQuote, qd), 3)}</b><small>of ${num(units(cfg.raise, qd), 2)} ${sym}</small>`}</div>
-        <div><label>Curve sold</label><b>${L.status ? "100" : L.progress.toFixed(2)}%</b><small>${num(units(L.tokensLeft, 18), 2)} left</small></div>
-      </div></div>
+      <div class="card"><div class="stats" id="tok-stats">${tokStats(L)}</div></div>
       <div class="card" id="price-chart" data-token="${L.token}">${priceChart(L)}</div>
       ${tokenInfo(L)}
       <div class="card"><h3>Bonding curve</h3>${curveSvg(L)}</div>
-      <div class="card"><h3>Trades on the curve <small>${trades.length ? "latest first" : ""}</small></h3>
-        <div class="tape">${trades.length ? trades.slice(0, 30).map((t) => `<div class="t">
-          <span class="${t.buy ? "b" : "s"}">${t.buy ? "BUY" : "SELL"}</span>
-          <span>${num(units(BigInt(t.t), 18), 2)}</span><span>${num(units(BigInt(t.q), qd), 5)} ${sym}</span>
-          <a class="hide-m" href="${EXPLORER}/address/${t.who}" target="_blank" rel="noopener">${short(t.who)}</a>
-          <a href="${EXPLORER}/tx/${t.tx}" target="_blank" rel="noopener">${ago(t.ts)} ↗</a></div>`).join("")
-          : `<div class="muted">No curve trades yet.</div>`}</div></div>
+      <div class="card" id="tape-card" data-token="${L.token}">${tokTape(L)}</div>
     </div>
     <div>
       <div class="card" id="tradebox"></div>

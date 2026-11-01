@@ -141,7 +141,12 @@ test("activity: last trade, heating up, and the latest trades", () => {
   assert.ok(C.heat(busy, now) > C.heat(quiet, now));
   assert.equal(C.heat(quiet, now), 0);
   const feed = C.recentActivity([quiet, busy], 2);
-  assert.deepEqual(feed.map((a) => a.t.ts), [9950, 9900]);
+  assert.deepEqual(feed.map((a) => a.ts), [9950, 9900]);
+  const launched = { ts: 9999, trades: [] };          // launched, nobody has traded yet: it still shows
+  const withNew = C.recentActivity([quiet, busy, launched], 2);
+  assert.equal(withNew[0].L, launched);
+  assert.equal(withNew[0].t, undefined);
+  assert.equal(withNew[1].t.ts, 9950);
   assert.equal(C.recentActivity([], 5).length, 0);
 });
 
