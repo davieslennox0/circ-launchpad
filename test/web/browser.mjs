@@ -1,14 +1,16 @@
 // Real-browser test of a deployed site, in headless Chromium, with a mock injected wallet (no private keys, nothing is ever
 // sent: the mock rejects every transaction and records what would have been signed).
-// Usage: node test/web/browser.mjs [url] [screenshot dir]
+// Usage: node test/web/browser.mjs [url] [screenshot dir] [staging]
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
 const URL_ = process.argv[2] || "https://circ.getsarf.xyz/";
 const SHOTS = process.argv[3];
 const HOLDER = "0x934d315C0a9C0866D393B722C1805F2B6b20b816"; // public address with Nands; used read-only
-const PAD = "0x4b9eb3ee0a25ffe62e159080f392551a99493cc7";
+const STAGING = process.argv[4] === "staging";
+const PAD = STAGING ? "0x8f2bbd9da778071a8b6e9c2d3fec3f3a6850e6ba" : "0x4b9eb3ee0a25ffe62e159080f392551a99493cc7";
 const TEST_TOKEN = "0x1868b87ec03130ea1389e0c81395c957e353f0d3";
+const lastNand = async () => { const r = await fetch("https://rpc.xlayer.tech", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: "0x8A60B4A4BCf4066F5E5F9A406fE09c5e4f52a58E", data: "0x61b8ce8c" }, "latest"] }) }); return Number((await r.json()).result); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0;
 const check = (name, ok, extra = "") => { console.log(`${ok ? "PASS" : "FAIL"}  ${name}${extra ? "  (" + extra + ")" : ""}`); if (!ok) failed++; };
@@ -59,7 +61,10 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   await go(p, "#/");
   check(`${label}: home loads production data`, await p.until(`${text()}.includes("Tape-out raise (WOKB)")`));
   check(`${label}: no 'fair' wording`, !/fair/i.test(await p.ev(text())));
-  check(`${label}: spec is read from production CurvePad`, (await p.ev(text())).includes("0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7"));
+  check(`${label}: spec is read from the expected CurvePad`, (await p.ev(text())).toLowerCase().includes(PAD));
+  check(`${label}: real logo loaded`, await p.until(`(() => { const i = document.querySelector(".brand img"); return i.complete && i.naturalWidth > 0; })()`, 15000));
+  check(`${label}: no pink in the UI`, !(await p.ev(`getComputedStyle(document.documentElement).getPropertyValue("--hub")`)).toLowerCase().includes("ea3680"));
+  if (STAGING) check(`${label}: staging banner shown, instance switch hidden`, (await p.ev(text("#banner"))).includes("STAGING") && await p.ev(`document.querySelector("#inst").hidden`));
   check(`${label}: nothing wider than the screen`, await p.ev(`document.documentElement.scrollWidth <= innerWidth`), await p.ev(`document.documentElement.scrollWidth + " vs " + innerWidth`));
   check(`${label}: Connect button fully on screen`, await p.ev(`(() => { const r = document.querySelector("#connect").getBoundingClientRect(); return r.right <= innerWidth && r.left >= 0; })()`));
   check(`${label}: nav reaches Launch and Creator fees`, await p.ev(`[...document.querySelectorAll("nav.links a")].filter((a) => a.getBoundingClientRect().width > 0).length === 3`));
@@ -73,8 +78,9 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   await p.shot(`${label}-chooser`);
   await p.ev(`document.querySelector(".wallets button.w").click()`);
   check(`${label}: holder's Nands are listed`, await p.until(`document.querySelectorAll(".nand[data-id]").length >= 11`), await p.ev(`document.querySelectorAll(".nand[data-id]").length + " rows"`));
+  const next = (await lastNand()) + 1;
   const list = await p.ev(text("#nandlist"));
-  check(`${label}: newest Nand #11 is listed, next mint is #13 (H1)`, list.includes("#11") && /next Nand \(#13\)/.test(list), list.split("\n").slice(0, 3).join(" | ").slice(0, 110));
+  check(`${label}: holder's #11 is listed, next mint is #${next} (H1)`, list.includes("#11") && list.includes(`next Nand (#${next})`), list.split("\n").slice(0, 3).join(" | ").slice(0, 110));
   await p.shot(`${label}-picker`);
   await p.ev(`document.querySelector('.nand[data-id="4"]').click(); document.querySelector("#cont").click()`);
   await p.until(`document.querySelector("#name")`);
@@ -84,11 +90,13 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   await p.ev(`(() => { const a = document.querySelector("#ack"); a.checked = true; a.dispatchEvent(new Event("change", { bubbles: true })); document.querySelector("#go").click(); })()`);
   await p.until(`window.__tx.length > 0`, 30000);
   const tx = await p.ev(`window.__tx[0] || null`);
-  check(`${label}: launch would go to production CurvePad, and the mock wallet rejected it`, tx && tx.to?.toLowerCase() === PAD, tx ? tx.to : "no tx");
+  check(`${label}: launch would go to the expected CurvePad, and the mock wallet rejected it`, tx && tx.to?.toLowerCase() === PAD, tx ? tx.to : "no tx");
   check(`${label}: rejection shown, retry offered`, await p.until(`${text("#runlog")}.includes("error")`, 10000));
 
-  await p.ev(`document.querySelector('#inst button[data-inst="test"]').click()`);
-  await p.until(`${text("#banner")}.includes("Preview data")`, 20000);
+  if (!STAGING) {
+    await p.ev(`document.querySelector('#inst button[data-inst="test"]').click()`);
+    await p.until(`${text("#banner")}.includes("Preview data")`, 20000);
+  }
   await go(p, "#/t/" + TEST_TOKEN);
   check(`${label}: token page shows Dev holds`, await p.until(`${text()}.includes("Dev holds")`), (await p.ev(`[...document.querySelectorAll(".pill")].map((x) => x.innerText).join(" | ")`)).slice(0, 90));
   check(`${label}: taped-out token has an in-app swap box (H6)`, await p.until(`document.querySelector("#tradebox .trade-tabs")`));
