@@ -8,7 +8,7 @@ Type=simple
 User=circ
 Group=circ
 Environment=OUT_DIR=/srv/circ-web/data
-Environment=RPC_URL=https://rpc.xlayer.tech
+EnvironmentFile=/etc/circ/indexer.env
 ExecStart=/usr/bin/python3 -I -u /opt/circ/indexer.py
 Restart=always
 RestartSec=10

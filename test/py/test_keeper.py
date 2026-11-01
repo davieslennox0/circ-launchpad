@@ -4,6 +4,7 @@ os.environ.update(CIRC_PAD="0x" + "aa" * 20, KEEPER_KEYSTORE="/ks", KEEPER_PASSW
 spec = importlib.util.spec_from_file_location("keeper", os.path.join(ROOT, "script", "keeper", "keeper.py"))
 kp = importlib.util.module_from_spec(spec); spec.loader.exec_module(kp)
 TOKEN = "0x" + "bb" * 20
+ORIGINAL_RPC, ORIGINAL_GRADUATE = kp.rpc, kp.graduate  # the other tests stub these on the module
 status_word = lambda st: "0x" + "0" * 64 * 9 + hex(st)[2:].rjust(64, "0")
 
 class Chain:
@@ -74,6 +75,54 @@ class Keeper(unittest.TestCase):
         self.assertEqual(kp.signer_args(), ["--keystore", "/ks", "--password-file", "/pw"])
         src = open(os.path.join(ROOT, "script", "keeper", "keeper.py")).read()
         self.assertNotIn("--private-key", src)
+
+class PrivateRpc(unittest.TestCase):
+    SECRET = "https://rpc.example/secret-token"
+
+    def setUp(self):
+        self.saved = (kp.RPC, kp.RPCS, kp.rpc_at, kp.subprocess.run)
+        kp.RPC, kp.RPCS = self.SECRET, [self.SECRET, "https://public.example"]
+
+    def tearDown(self):
+        kp.RPC, kp.RPCS, kp.rpc_at, kp.subprocess.run = self.saved
+
+    def test_falls_back_when_the_primary_refuses(self):
+        seen = []
+        def at(url, method, params):
+            seen.append(url)
+            if url == self.SECRET:
+                raise RuntimeError("archive requests are not available")
+            return "0x1"
+        kp.rpc_at = at
+        self.assertEqual(ORIGINAL_RPC("eth_blockNumber", []), "0x1")
+        self.assertEqual(seen, [self.SECRET, "https://public.example"])
+
+    def test_an_error_never_shows_the_url(self):
+        def at(url, method, params):
+            raise RuntimeError(f"failed for {url}")
+        kp.rpc_at = at
+        with self.assertRaises(RuntimeError) as c:
+            ORIGINAL_RPC("eth_blockNumber", [])
+        self.assertNotIn("secret-token", str(c.exception))
+
+    def test_send_keeps_the_url_off_the_command_line_and_out_of_logs(self):
+        calls = []
+        class R: returncode, stdout, stderr = 1, "", "error sending request for url (https://rpc.example/secret-token)"
+        def run(args, **kw):
+            calls.append((args, kw["env"]["ETH_RPC_URL"]))
+            return R
+        kp.subprocess.run = run
+        logged = []
+        real = kp.log
+        kp.log = lambda m: logged.append(kp.redact(m))
+        try:
+            self.assertFalse(ORIGINAL_GRADUATE(TOKEN))
+        finally:
+            kp.log = real
+        self.assertEqual([u for _, u in calls], kp.RPCS, "primary, then fallback")
+        self.assertTrue(all("secret-token" not in " ".join(a) for a, _ in calls))
+        self.assertNotIn("secret-token", " ".join(logged))
+
 
 if __name__ == "__main__":
     unittest.main()

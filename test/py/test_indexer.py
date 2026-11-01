@@ -2,6 +2,7 @@ import importlib.util, json, os, tempfile, unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 spec = importlib.util.spec_from_file_location("indexer", os.path.join(ROOT, "web", "indexer.py"))
 ix = importlib.util.module_from_spec(spec); spec.loader.exec_module(ix)
+REAL_RPC = ix.rpc
 TOKEN = "0x" + "ab" * 20
 w = lambda n: hex(n)[2:].rjust(64, "0")
 t = lambda a: "0x" + a[2:].rjust(64, "0")
@@ -73,6 +74,37 @@ class Indexer(unittest.TestCase):
             with open(p, "w") as f:
                 f.write("{broken")
             self.assertEqual(ix.load("prod")["scannedTo"], ix.INSTANCES["prod"]["start"] - 1)
+
+class PrivateRpc(unittest.TestCase):
+    SECRET = "https://rpc.example/secret-token"
+
+    def setUp(self):
+        self.saved = (ix.RPCS, ix.rpc_at)
+        ix.RPCS = [self.SECRET, "https://public.example"]
+
+    def tearDown(self):
+        ix.RPCS, ix.rpc_at = self.saved
+
+    def test_falls_back_when_the_primary_refuses(self):
+        seen = []
+        def at(url, method, params):
+            seen.append(url)
+            if url == self.SECRET:
+                raise RuntimeError("archive requests are not available")
+            return []
+        ix.rpc_at = at
+        self.assertEqual(REAL_RPC("eth_getLogs", [{}]), [])
+        self.assertEqual(seen, ix.RPCS)
+
+    def test_an_error_never_shows_the_url(self):
+        def at(url, method, params):
+            raise RuntimeError(f"failed for {url}")
+        ix.rpc_at = at
+        with self.assertRaises(RuntimeError) as c:
+            REAL_RPC("eth_blockNumber", [])
+        self.assertNotIn("secret-token", str(c.exception))
+        self.assertNotIn("secret-token", ix.redact(f"x {self.SECRET} y"))
+
 
 if __name__ == "__main__":
     unittest.main()

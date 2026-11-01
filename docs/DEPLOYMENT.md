@@ -34,9 +34,11 @@ Verification:
 Live test: the same code passed 62/62 on the CIRC-TEST instance (`docs/E2E_RESULTS-v3.md`).
 
 Services on the server (dedicated `circ` user, code in `/opt/circ`, not the git checkout):
-- `circ-keeper`: keeper `0x2b41B054C8Ae9fE81Fc64928377e315c2DE6856A`, encrypted keystore in `/etc/circ`, log
+- `circ-keeper`: keeper `0x2b41B054C8Ae9fE81Fc64928377e315c2DE6856A`, private RPC (token only in `/etc/circ/keeper.env`) with the public RPC as fallback, encrypted
+  keystore in `/etc/circ`, log
   `/var/log/circ-keeper.log`, state `/var/lib/circ-keeper`.
-- `circ-indexer`: keyless, writes `/srv/circ-web/data`, log `/var/log/circ-indexer.log`.
+- `circ-indexer`: holds no wallet key, same private RPC and fallback (`/etc/circ/indexer.env`), writes `/srv/circ-web/data`, log
+  `/var/log/circ-indexer.log`. The website itself stays on the public RPC.
 - Site: https://circ.getsarf.xyz from `/srv/circ-web` (Caddy block in `deploy/Caddyfile.circ`).
 - Logo pinning: https://circ-launchpad-pin.vercel.app/api/pin (`pin/`, Vercel project root `pin`).
 - Staging: https://circ.getsarf.xyz/staging/ from `/srv/circ-staging`, on the CIRC-TEST pad with launching allowed. Transactions there
