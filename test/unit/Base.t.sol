@@ -81,7 +81,7 @@ abstract contract UnitBase is Test {
 
     function _launch(address quote) internal returns (LaunchToken t) {
         vm.prank(creator);
-        t = LaunchToken(pad.createLaunch(address(nft), quote == address(wokb) ? 1 : 2, "Circ Test", "CT", quote, 0, 0));
+        t = LaunchToken(pad.createLaunch(address(nft), quote == address(wokb) ? 1 : 2, "Circ Test", "CT", "", quote, 0, 0));
     }
 
     function _container(uint256 id) internal view returns (address) {

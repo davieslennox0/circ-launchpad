@@ -95,7 +95,7 @@ contract ForkReentrancyTest is ForkBase {
         vm.stopPrank();
 
         vm.prank(creator);
-        LaunchToken t = LaunchToken(rpad.createLaunch(Addresses.NANDOUT, 3, "Reenter", "RE", address(rq), 0, 0));
+        LaunchToken t = LaunchToken(rpad.createLaunch(Addresses.NANDOUT, 3, "Reenter", "RE", "", address(rq), 0, 0));
         vm.roll(block.number + rpad.GUARD_BLOCKS());
         rq.mint(alice, 10_000e8);
         vm.startPrank(alice);

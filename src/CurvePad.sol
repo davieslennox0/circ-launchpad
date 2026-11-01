@@ -75,6 +75,8 @@ contract CurvePad is FeeVault {
     /// @notice During the first GUARD_BLOCKS after launch, at most this many curve tokens (0.5% of supply) can be bought
     /// per block, summed across all buyers (the creator's dev-buy inside createLaunch is exempt and not counted).
     uint256 public constant MAX_EARLY_BUY = TOTAL_SUPPLY / 200;
+    /// @notice Max byte length of a launch's logo URI (e.g. ipfs://<CIDv1>). Emitted only, never stored.
+    uint256 public constant MAX_IMAGE_URI = 256;
 
     address public immutable wokb;
     address public immutable bem;
@@ -110,6 +112,9 @@ contract CurvePad is FeeVault {
 
     mapping(address token => EarlyBlock) public earlyBlock;
 
+    /// @dev One launch per Circuit, ever: set on the first createLaunch and never cleared, so it survives NFT transfers.
+    mapping(address circuitNft => mapping(uint256 circuitId => bool)) private _launched;
+
 
     event LaunchCreated(
         address indexed token,
@@ -117,7 +122,8 @@ contract CurvePad is FeeVault {
         address indexed circuitNft,
         uint256 circuitId,
         address container,
-        address creator
+        address creator,
+        string imageURI
     );
     event Trade(
         address indexed token,
@@ -137,6 +143,8 @@ contract CurvePad is FeeVault {
     error BadHookAddress();
     error BadQuote();
     error NotTapeOut();
+    error AlreadyLaunched();
+    error ImageURITooLong();
     error UnknownLaunch();
     error CurveClosed();
     error EarlyBlockCapReached();
@@ -199,6 +207,7 @@ contract CurvePad is FeeVault {
     // ------------------------------------------------------------------ launch
 
     /// @notice Launch a token bound to a TapeOut Circuit you hold.
+    /// @param imageURI token logo URI (e.g. ipfs://...), at most MAX_IMAGE_URI bytes; emitted in LaunchCreated, not stored.
     /// @param devBuyAmount BEM launches only: quote pulled via transferFrom for the creator's dev-buy.
     /// WOKB launches send native OKB as msg.value instead (wrapped here). The dev-buy is exempt from anti-snipe.
     function createLaunch(
@@ -206,11 +215,13 @@ contract CurvePad is FeeVault {
         uint256 circuitId,
         string calldata name,
         string calldata symbol,
+        string calldata imageURI,
         address quote,
         uint256 devBuyAmount,
         uint256 devBuyMinOut
     ) external payable nonReentrant returns (address token) {
-        token = _deployLaunch(circuitNft, circuitId, name, symbol, quote);
+        if (bytes(imageURI).length > MAX_IMAGE_URI) revert ImageURITooLong();
+        token = _deployLaunch(circuitNft, circuitId, name, symbol, imageURI, quote);
 
         if (quote == wokb) {
             if (devBuyAmount != 0) revert BadValue();
@@ -234,11 +245,14 @@ contract CurvePad is FeeVault {
         uint256 circuitId,
         string calldata name,
         string calldata symbol,
+        string calldata imageURI,
         address quote
     ) internal returns (address token) {
         QuoteConfig memory cfg = quoteConfig(quote);
         if (!circuitFactory.isCPU(circuitNft)) revert NotTapeOut();
         if (ICircuitNFT(circuitNft).ownerOf(circuitId) != msg.sender) revert NotHolder();
+        if (_launched[circuitNft][circuitId]) revert AlreadyLaunched();
+        _launched[circuitNft][circuitId] = true;
         address container = registry.account(containerImpl, bytes32(0), block.chainid, circuitNft, circuitId);
         _registerContainer(container, circuitNft, circuitId);
 
@@ -256,7 +270,7 @@ contract CurvePad is FeeVault {
             launchBlock: uint64(block.number),
             status: Status.Trading
         });
-        emit LaunchCreated(token, quote, circuitNft, circuitId, container, msg.sender);
+        emit LaunchCreated(token, quote, circuitNft, circuitId, container, msg.sender, imageURI);
     }
 
     // ------------------------------------------------------------------ trade
@@ -322,6 +336,11 @@ contract CurvePad is FeeVault {
     }
 
     // ------------------------------------------------------------------ views
+
+    /// @notice True once a token has been launched from this Circuit (permanent; one launch per Circuit).
+    function isLaunched(address circuitNft, uint256 circuitId) external view returns (bool) {
+        return _launched[circuitNft][circuitId];
+    }
 
     function quoteConfig(address quote) public view returns (QuoteConfig memory) {
         if (quote == wokb) return QuoteConfig(wokbVQuote0, wokbVToken0, wokbCurveSupply, wokbLpTokens);

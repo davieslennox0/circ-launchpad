@@ -1,0 +1,21 @@
+[Unit]
+Description=Circ Launchpad keeper v2 (graduates Complete curves on the prod CurvePad 0x071a…7A18)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/circ-keeper-v2.env
+Environment=PATH=/root/.foundry/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -I -u /root/circ/script/keeper/keeper.py
+Restart=always
+RestartSec=10
+StateDirectory=circ-keeper-v2
+StandardOutput=append:/var/log/circ-keeper-v2.log
+StandardError=append:/var/log/circ-keeper-v2.log
+MemoryHigh=96M
+MemoryMax=128M
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

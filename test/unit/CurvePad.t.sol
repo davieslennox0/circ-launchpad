@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {Vm} from "forge-std/Test.sol";
 import {UnitBase} from "./Base.t.sol";
 import {MockNPM} from "./Mocks.sol";
 import {CurvePad} from "../../src/CurvePad.sol";
@@ -39,37 +40,136 @@ contract CurvePadUnitTest is UnitBase {
     function test_create_rejectsNonHolder() public {
         vm.prank(alice);
         vm.expectRevert(FeeVault.NotHolder.selector);
-        pad.createLaunch(address(nft), 1, "X", "X", address(wokb), 0, 0);
+        pad.createLaunch(address(nft), 1, "X", "X", "", address(wokb), 0, 0);
     }
 
     function test_create_rejectsNonTapeOutNft() public {
         vm.prank(creator);
         vm.expectRevert(CurvePad.NotTapeOut.selector);
-        pad.createLaunch(address(fakeNft), 1, "X", "X", address(wokb), 0, 0);
+        pad.createLaunch(address(fakeNft), 1, "X", "X", "", address(wokb), 0, 0);
     }
 
     function test_create_rejectsOtherQuote() public {
         vm.prank(creator);
         vm.expectRevert(CurvePad.BadQuote.selector);
-        pad.createLaunch(address(nft), 1, "X", "X", address(0xBEEF), 0, 0);
+        pad.createLaunch(address(nft), 1, "X", "X", "", address(0xBEEF), 0, 0);
     }
 
     function test_create_sameCircuitTwiceReverts() public {
         _launch(address(wokb));
         vm.prank(creator);
-        vm.expectRevert(); // CREATE2 collision
-        pad.createLaunch(address(nft), 1, "Circ Test", "CT", address(wokb), 0, 0);
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
+        pad.createLaunch(address(nft), 1, "Circ Test", "CT", "", address(wokb), 0, 0);
+    }
+
+    function test_create_sameCircuitDifferentNameReverts() public {
+        _launch(address(wokb));
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
+        pad.createLaunch(address(nft), 1, "Other Name", "OTHER", "", address(wokb), 0, 0);
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
+        pad.createLaunch(address(nft), 1, "Other Name", "OTHER", "", address(bem), 0, 0);
+    }
+
+    function test_create_sameCircuitNewHolderReverts() public {
+        _launch(address(wokb));
+        vm.prank(creator);
+        nft.transferFrom(creator, alice, 1);
+        vm.prank(alice);
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
+        pad.createLaunch(address(nft), 1, "Circ Test", "CT", "", address(wokb), 0, 0);
+        vm.prank(alice);
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
+        pad.createLaunch(address(nft), 1, "Fresh", "FRESH", "", address(wokb), 0, 0);
+    }
+
+    function test_isLaunched_setOnLaunchOnly() public {
+        assertFalse(pad.isLaunched(address(nft), 1));
+        assertFalse(pad.isLaunched(address(nft), 2));
+        _launch(address(wokb)); // circuit 1
+        assertTrue(pad.isLaunched(address(nft), 1));
+        assertFalse(pad.isLaunched(address(nft), 2), "other circuits unaffected");
+        assertFalse(pad.isLaunched(address(fakeNft), 1), "keyed by collection too");
+        // still usable: circuit 2 launches fine
+        vm.prank(creator);
+        pad.createLaunch(address(nft), 2, "Two", "TWO", "", address(wokb), 0, 0);
+        assertTrue(pad.isLaunched(address(nft), 2));
+    }
+
+    function test_create_emitsImageURI() public {
+        string memory uri = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
+        vm.recordLogs();
+        vm.prank(creator);
+        address t = pad.createLaunch(address(nft), 1, "Logo", "LOGO", uri, address(wokb), 0, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(pad) && logs[i].topics[0] == CurvePad.LaunchCreated.selector) {
+                assertEq(address(uint160(uint256(logs[i].topics[1]))), t);
+                (uint256 cid, address container, address who, string memory got) =
+                    abi.decode(logs[i].data, (uint256, address, address, string));
+                assertEq(cid, 1);
+                assertEq(container, _container(1));
+                assertEq(who, creator);
+                assertEq(got, uri);
+                found = true;
+            }
+        }
+        assertTrue(found);
+    }
+
+    function test_create_imageURIAtMaxLengthOk_overMaxReverts() public {
+        bytes memory max = new bytes(pad.MAX_IMAGE_URI());
+        for (uint256 i; i < max.length; ++i) max[i] = "a";
+        bytes memory over = bytes.concat(max, "a");
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.ImageURITooLong.selector);
+        pad.createLaunch(address(nft), 1, "X", "X", string(over), address(wokb), 0, 0);
+        assertFalse(pad.isLaunched(address(nft), 1), "rejected launch does not consume the circuit");
+        vm.prank(creator);
+        pad.createLaunch(address(nft), 1, "X", "X", string(max), address(wokb), 0, 0);
+        assertTrue(pad.isLaunched(address(nft), 1));
+    }
+
+    function test_create_emptyImageURIOk() public {
+        vm.prank(creator);
+        pad.createLaunch(address(nft), 2, "X", "X", "", address(bem), 0, 0);
+        assertTrue(pad.isLaunched(address(nft), 2));
+    }
+
+    function test_isLaunched_revertAfterFlagWrite_rollsBack() public {
+        // The flag is written before the dev-buy; a dev-buy Slippage revert must roll it back with everything else.
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.Slippage.selector);
+        pad.createLaunch{value: 1 ether}(address(nft), 1, "X", "X", "", address(wokb), 0, type(uint256).max);
+        assertFalse(pad.isLaunched(address(nft), 1), "flag rolled back");
+        // BadValue after the flag write (WOKB launch with devBuyAmount != 0) also rolls back
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.BadValue.selector);
+        pad.createLaunch(address(nft), 1, "X", "X", "", address(wokb), 1, 0);
+        assertFalse(pad.isLaunched(address(nft), 1));
+        vm.prank(creator);
+        pad.createLaunch(address(nft), 1, "X", "X", "", address(wokb), 0, 0);
+        assertTrue(pad.isLaunched(address(nft), 1), "circuit still launchable after the failed attempts");
+    }
+
+    function test_isLaunched_failedLaunchLeavesItUnset() public {
+        vm.prank(alice); // not the holder
+        vm.expectRevert(FeeVault.NotHolder.selector);
+        pad.createLaunch(address(nft), 1, "X", "X", "", address(wokb), 0, 0);
+        assertFalse(pad.isLaunched(address(nft), 1));
     }
 
     function test_create_devBuyExemptFromAntiSnipe() public {
         vm.prank(creator);
-        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", address(wokb), 0, 0));
+        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", "", address(wokb), 0, 0));
         assertGt(t.balanceOf(creator), pad.MAX_EARLY_BUY(), "dev-buy above the early cap");
     }
 
     function test_create_bemDevBuy() public {
         vm.prank(creator);
-        LaunchToken t = LaunchToken(pad.createLaunch(address(nft), 2, "X", "X", address(bem), 10e8, 0));
+        LaunchToken t = LaunchToken(pad.createLaunch(address(nft), 2, "X", "X", "", address(bem), 10e8, 0));
         assertGt(t.balanceOf(creator), 0);
         (,, uint256 real,,) = _curve(address(t));
         uint256 amt = 10e8;
@@ -79,7 +179,7 @@ contract CurvePadUnitTest is UnitBase {
     function test_create_bemRejectsNativeValue() public {
         vm.prank(creator);
         vm.expectRevert(CurvePad.BadValue.selector);
-        pad.createLaunch{value: 1}(address(nft), 2, "X", "X", address(bem), 0, 0);
+        pad.createLaunch{value: 1}(address(nft), 2, "X", "X", "", address(bem), 0, 0);
     }
 
     // ------------------------------------------------------------- trading
@@ -368,7 +468,7 @@ contract CurvePadUnitTest is UnitBase {
 
     function test_antiSnipe_devBuyNotCounted() public {
         vm.prank(creator);
-        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", address(wokb), 0, 0));
+        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", "", address(wokb), 0, 0));
         assertGt(t.balanceOf(creator), pad.MAX_EARLY_BUY());
         vm.prank(alice);
         pad.buy(address(t), 50 ether, 0, block.timestamp);
@@ -441,7 +541,7 @@ contract CurvePadUnitTest is UnitBase {
     function test_devBuyCanCompleteCurve() public {
         vm.prank(creator);
         LaunchToken t =
-            LaunchToken(pad.createLaunch{value: 1_000 ether}(address(nft), 1, "X", "X", address(wokb), 0, 0));
+            LaunchToken(pad.createLaunch{value: 1_000 ether}(address(nft), 1, "X", "X", "", address(wokb), 0, 0));
         (,,, uint256 left, CurvePad.Status st) = _curve(address(t));
         assertEq(left, 0);
         assertEq(uint8(st), uint8(CurvePad.Status.Complete));
