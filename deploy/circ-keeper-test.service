@@ -1,0 +1,37 @@
+[Unit]
+Description=Circ Launchpad keeper (graduates Complete curves on the CIRC-TEST CurvePad, for staging)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=circ
+Group=circ
+EnvironmentFile=/etc/circ/keeper-test.env
+Environment=PATH=/opt/circ/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/circ-keeper-test
+Environment=FOUNDRY_DISABLE_NIGHTLY_WARNING=1
+ExecStart=/usr/bin/python3 -I -u /opt/circ/keeper.py
+Restart=always
+RestartSec=10
+StateDirectory=circ-keeper-test
+StandardOutput=append:/var/log/circ-keeper-test.log
+StandardError=append:/var/log/circ-keeper-test.log
+MemoryHigh=96M
+MemoryMax=128M
+Nice=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

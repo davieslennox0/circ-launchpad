@@ -390,3 +390,15 @@ html, body { overflow-x: clip; }
 
 .av { display: grid; place-items: center; font: 600 12px var(--mono); color: var(--ink); }
 .tp-head .av { font-size: 16px; flex: none; }
+
+.foot-copy { display: flex; flex-direction: column; gap: 6px; }
+
+/* Fab floor on a phone: one stacked card per token, no column header */
+@media (max-width: 600px) {
+  .row.head { display: none; }
+  .row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; }
+  .row .tok { grid-column: 1 / -1; min-width: 0; }
+  .row .tok small { overflow-wrap: anywhere; }
+  .row .hide-m { display: block; grid-column: 1 / -1; }
+  .row .status-cell { grid-column: 1 / -1; }
+}

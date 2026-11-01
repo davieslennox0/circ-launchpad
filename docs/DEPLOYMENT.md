@@ -40,7 +40,7 @@ Services on the server (dedicated `circ` user, code in `/opt/circ`, not the git 
 - Site: https://circ.getsarf.xyz from `/srv/circ-web` (Caddy block in `deploy/Caddyfile.circ`).
 - Logo pinning: https://circ-launchpad-pin.vercel.app/api/pin (`pin/`, Vercel project root `pin`).
 - Staging: https://circ.getsarf.xyz/staging/ from `/srv/circ-staging`, on the CIRC-TEST pad with launching allowed. Transactions there
-  are real and cost real OKB. No keeper watches it, so "Tape out now" is manual. Publish with `deploy/publish-web.sh staging|prod`.
+  are real and cost real OKB. `circ-keeper-test` graduates it, with its own wallet, state and log (`/var/log/circ-keeper-test.log`). Publish with `deploy/publish-web.sh staging|prod`.
 
 To update code: copy `script/keeper/keeper.py` and `web/indexer.py` to `/opt/circ`, and publish `web/` with `deploy/publish-web.sh`.
 Before each frontend release run `node test/web/browser.mjs <url> <shots dir> [staging]`.

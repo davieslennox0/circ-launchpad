@@ -134,6 +134,10 @@
   /** Byte length as the contract counts it (name, symbol and imageURI limits are in bytes). */
   const byteLength = (s) => new TextEncoder().encode(s).length;
 
-  return { esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
+  // Blocks left in which a buy sent now is still capped. CurvePad: guarded while block.number < launchBlock + GUARD_BLOCKS,
+  // and a transaction sent now lands in head + 1 at the earliest.
+  function guardBlocksLeft(launchBlock, guard, head) { return Math.max(0, launchBlock + guard - head - 1); }
+
+  return { guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
     recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength };
 });
