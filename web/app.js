@@ -104,8 +104,9 @@ const $ = (s, el = document) => el.querySelector(s);
 const STATUS = ["Trading", "Complete", "Taped out"];
 const STATUS_CLS = ["trading", "complete", "grad"];
 
+const CFG = window.CIRC_CONFIG || {}; // config.js; a staging copy sets { staging: true }: TEST pad only, launching allowed
 const state = {
-  inst: localGet("circ.inst") || "prod",
+  inst: CFG.staging ? "test" : localGet("circ.inst") || "prod",
   account: null, signer: null,
   pad: null,       // on-chain pad facts
   prices: null,    // {okbUsd, bemUsd}
@@ -136,8 +137,8 @@ function ago(ts) {
   if (s < 86400) return Math.floor(s / 3600) + "h";
   return Math.floor(s / 86400) + "d";
 }
-function hue(addr) { // stable avatar colour from the token address, drawn from the logo palette
-  const pal = ["#EA3680", "#FF7F27", "#22B14C", "#3F48CC", "#880015", "#b8a800"];
+function hue(addr) { // stable avatar colour from the token address, drawn from muted Sarf tones
+  const pal = ["#2A2B2E", "#3A3D42", "#3F4F45", "#54472F", "#454A52", "#533A37"];
   return pal[parseInt(addr.slice(2, 6), 16) % pal.length];
 }
 function toast(msg, ms = 4200) {
@@ -199,7 +200,7 @@ let INDEX = null;
 async function loadLaunches() {
   INDEX = null;
   try {
-    const r = await fetch(`/data/index-${state.inst}.json?t=${Date.now()}`, { cache: "no-store" });
+    const r = await fetch(`data/index-${state.inst}.json?t=${Date.now()}`, { cache: "no-store" });
     if (r.ok) INDEX = await r.json();
   } catch {}
   const known = new Map();
@@ -357,7 +358,10 @@ async function sendTx(label, fn) {
 // ---------------------------------------------------------------- views
 function setBanner() {
   const b = $("#banner");
-  if (state.inst === "test") {
+  if (CFG.staging) {
+    b.hidden = false; b.classList.add("staging"); $("#inst").hidden = true;
+    b.firstElementChild.textContent = "STAGING: tiny test curves on the CIRC-TEST pad, not production. Transactions are real, on X Layer mainnet, and cost real OKB.";
+  } else if (state.inst === "test") {
     b.hidden = false;
     b.firstElementChild.textContent = "Preview data: you're viewing the CIRC-TEST instance (a tiny 0.099 WOKB test curve used for the end-to-end run). Switch to Mainnet for production.";
   } else b.hidden = true;
@@ -449,7 +453,7 @@ async function viewFloor() {
   <div class="wafer-wrap">
     <div class="wafer"><div class="grid">${cells.join("")}</div></div>
     <div>${L.length ? `<div class="list"><div class="row head"><div>Token</div><div>Market cap</div><div class="hide-m">Curve</div><div>Status · Dev</div><div>Age</div></div>${rows}</div>`
-      : `<div class="empty-state"><b>The wafer is clean.</b>No launches on ${INSTANCES[state.inst].label} yet. ${state.inst === "prod"
+      : `<div class="empty-state"><b>The wafer is clean.</b>No launches on ${INSTANCES[state.inst].label} yet. ${state.inst === "prod" && !CFG.staging
         ? `<br><br><button class="btn" data-inst-go="test">See it with preview data</button>` : ""}</div>`}</div>
   </div>`;
 }
@@ -474,11 +478,11 @@ function curveSvg(L) {
   for (let i = 0; i <= N; i++) { const s = (sold * i) / N; lit += (i ? "L" : "M") + X(s).toFixed(1) + " " + Y(mc(s)).toFixed(1); }
   const cx = X(sold), cy = Y(mc(sold));
   return `<svg class="curve" viewBox="0 0 ${W} ${H}" role="img" aria-label="Bonding curve: market cap against tokens sold">
-    <defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#FF7F27"/><stop offset="1" stop-color="#EA3680"/></linearGradient></defs>
+    <defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#7C838C"/><stop offset="1" stop-color="#F4F6F9"/></linearGradient></defs>
     <g stroke="rgba(255,255,255,.06)">${[0, .25, .5, .75, 1].map((f) => `<line x1="${P}" x2="${W - P}" y1="${P + f * (H - 2 * P)}" y2="${P + f * (H - 2 * P)}"/>`).join("")}</g>
     <path d="${d}" fill="none" stroke="#2A2B2E" stroke-width="2"/>
     <path d="${lit}" fill="none" stroke="url(#g)" stroke-width="2.5"/>
-    <circle cx="${cx}" cy="${cy}" r="5" fill="#EA3680"/><circle cx="${cx}" cy="${cy}" r="11" fill="none" stroke="rgba(234,54,128,.35)"/>
+    <circle cx="${cx}" cy="${cy}" r="5" fill="#F4F6F9"/><circle cx="${cx}" cy="${cy}" r="11" fill="none" stroke="rgba(255,255,255,.25)"/>
     <g font-family="IBM Plex Mono" font-size="11" fill="#8B929A">
       <text x="${P}" y="${H - 10}">0</text><text x="${W - P}" y="${H - 10}" text-anchor="end">${num(cs, 0)} sold → tape-out</text>
       <text x="${P}" y="${Y(lo) - 8}">${usd(lo)}</text><text x="${W - P}" y="${P - 10}" text-anchor="end">${usd(hi)}</text>
@@ -930,7 +934,7 @@ function stepsBar() {
 }
 
 async function viewLaunch() {
-  if (state.inst !== "prod") {
+  if (state.inst !== "prod" && !CFG.staging) {
     $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Launching is mainnet-only</b>The preview instance is read-only.<br><br><button class="btn" data-inst-go="prod">Switch to Mainnet</button></div>`;
     return;
   }
@@ -1018,7 +1022,7 @@ async function stepDetails() {
     </div>
     <div class="pinned"><button class="btn hub block" id="next">Review</button><button class="btn ghost block" id="back" style="margin-top:8px">Back</button></div></div>`;
   const prev = $("#prev");
-  const paint = () => { prev.style.backgroundImage = flow.img ? `url(${flow.img})` : ""; prev.textContent = flow.img ? "" : ($("#sym").value || "?").slice(0, 4).toUpperCase(); prev.style.background = flow.img ? "" : "var(--hub)"; if (flow.img) prev.style.backgroundImage = `url(${flow.img})`; };
+  const paint = () => { prev.style.backgroundImage = flow.img ? `url(${flow.img})` : ""; prev.textContent = flow.img ? "" : ($("#sym").value || "?").slice(0, 4).toUpperCase(); prev.style.background = flow.img ? "" : "var(--panel-2)"; if (flow.img) prev.style.backgroundImage = `url(${flow.img})`; };
   const qsel = () => {
     document.querySelectorAll(".qopt").forEach((x) => x.classList.toggle("on", x.dataset.q === flow.quote));
     $("#vol").hidden = !isBem(flow.quote);
@@ -1083,7 +1087,7 @@ async function stepConfirm() {
   $("#app").innerHTML = `<div class="flow">${stepsBar()}<h2>Confirm launch</h2>
     <div class="sheet">
       <div class="warnline"><span class="pill complete">X Layer mainnet</span><span class="pill" style="color:var(--red);border-color:rgba(194,99,90,.45)">Irreversible</span>${bem ? '<span class="pill vol">BEM · volatile quote</span>' : ""}</div>
-      <div class="tp-head" style="padding:0 0 6px;gap:14px">${flow.img ? `<div class="av" style="background:var(--hub)"><img src="${esc(flow.img)}" alt=""></div>` : avatar(L)}
+      <div class="tp-head" style="padding:0 0 6px;gap:14px">${flow.img ? `<div class="av" style="background:var(--panel-2)"><img src="${esc(flow.img)}" alt=""></div>` : avatar(L)}
         <div><div style="font-size:20px;color:var(--ink);font-weight:600">${esc(flow.name)} <span class="muted">$${esc(flow.sym)}</span></div>
         <div class="muted mono" style="font-size:12.5px">${minting ? "wired to the next Nand (minted first)" : "wired to Nand #" + flow.sel.id}</div></div></div>
       <div class="note warn"><b>Each Circuit can launch one token, ever. This uses it up.</b></div>
@@ -1201,7 +1205,7 @@ async function viewCreator() {
 let booted = false;
 let HIDE = new Set();
 async function loadHideList() { // moderation: token addresses whose logo is replaced by the initials avatar
-  try { const r = await fetch(`/hidelist.json?t=${Date.now()}`, { cache: "no-store" }); if (r.ok) HIDE = new Set((await r.json()).map((a) => String(a).toLowerCase())); } catch {}
+  try { const r = await fetch(`hidelist.json?t=${Date.now()}`, { cache: "no-store" }); if (r.ok) HIDE = new Set((await r.json()).map((a) => String(a).toLowerCase())); } catch {}
 }
 async function boot() {
   setBanner();
