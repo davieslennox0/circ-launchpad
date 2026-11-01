@@ -110,6 +110,9 @@ contract CurvePad is FeeVault {
 
     mapping(address token => EarlyBlock) public earlyBlock;
 
+    /// @dev One launch per Circuit, ever: set on the first createLaunch and never cleared, so it survives NFT transfers.
+    mapping(address circuitNft => mapping(uint256 circuitId => bool)) private _launched;
+
 
     event LaunchCreated(
         address indexed token,
@@ -137,6 +140,7 @@ contract CurvePad is FeeVault {
     error BadHookAddress();
     error BadQuote();
     error NotTapeOut();
+    error AlreadyLaunched();
     error UnknownLaunch();
     error CurveClosed();
     error EarlyBlockCapReached();
@@ -239,6 +243,8 @@ contract CurvePad is FeeVault {
         QuoteConfig memory cfg = quoteConfig(quote);
         if (!circuitFactory.isCPU(circuitNft)) revert NotTapeOut();
         if (ICircuitNFT(circuitNft).ownerOf(circuitId) != msg.sender) revert NotHolder();
+        if (_launched[circuitNft][circuitId]) revert AlreadyLaunched();
+        _launched[circuitNft][circuitId] = true;
         address container = registry.account(containerImpl, bytes32(0), block.chainid, circuitNft, circuitId);
         _registerContainer(container, circuitNft, circuitId);
 
@@ -322,6 +328,11 @@ contract CurvePad is FeeVault {
     }
 
     // ------------------------------------------------------------------ views
+
+    /// @notice True once a token has been launched from this Circuit (permanent; one launch per Circuit).
+    function isLaunched(address circuitNft, uint256 circuitId) external view returns (bool) {
+        return _launched[circuitNft][circuitId];
+    }
 
     function quoteConfig(address quote) public view returns (QuoteConfig memory) {
         if (quote == wokb) return QuoteConfig(wokbVQuote0, wokbVToken0, wokbCurveSupply, wokbLpTokens);

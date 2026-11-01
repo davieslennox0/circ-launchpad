@@ -57,8 +57,50 @@ contract CurvePadUnitTest is UnitBase {
     function test_create_sameCircuitTwiceReverts() public {
         _launch(address(wokb));
         vm.prank(creator);
-        vm.expectRevert(); // CREATE2 collision
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
         pad.createLaunch(address(nft), 1, "Circ Test", "CT", address(wokb), 0, 0);
+    }
+
+    function test_create_sameCircuitDifferentNameReverts() public {
+        _launch(address(wokb));
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
+        pad.createLaunch(address(nft), 1, "Other Name", "OTHER", address(wokb), 0, 0);
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
+        pad.createLaunch(address(nft), 1, "Other Name", "OTHER", address(bem), 0, 0);
+    }
+
+    function test_create_sameCircuitNewHolderReverts() public {
+        _launch(address(wokb));
+        vm.prank(creator);
+        nft.transferFrom(creator, alice, 1);
+        vm.prank(alice);
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
+        pad.createLaunch(address(nft), 1, "Circ Test", "CT", address(wokb), 0, 0);
+        vm.prank(alice);
+        vm.expectRevert(CurvePad.AlreadyLaunched.selector);
+        pad.createLaunch(address(nft), 1, "Fresh", "FRESH", address(wokb), 0, 0);
+    }
+
+    function test_isLaunched_setOnLaunchOnly() public {
+        assertFalse(pad.isLaunched(address(nft), 1));
+        assertFalse(pad.isLaunched(address(nft), 2));
+        _launch(address(wokb)); // circuit 1
+        assertTrue(pad.isLaunched(address(nft), 1));
+        assertFalse(pad.isLaunched(address(nft), 2), "other circuits unaffected");
+        assertFalse(pad.isLaunched(address(fakeNft), 1), "keyed by collection too");
+        // still usable: circuit 2 launches fine
+        vm.prank(creator);
+        pad.createLaunch(address(nft), 2, "Two", "TWO", address(wokb), 0, 0);
+        assertTrue(pad.isLaunched(address(nft), 2));
+    }
+
+    function test_isLaunched_failedLaunchLeavesItUnset() public {
+        vm.prank(alice); // not the holder
+        vm.expectRevert(FeeVault.NotHolder.selector);
+        pad.createLaunch(address(nft), 1, "X", "X", address(wokb), 0, 0);
+        assertFalse(pad.isLaunched(address(nft), 1));
     }
 
     function test_create_devBuyExemptFromAntiSnipe() public {
