@@ -46,7 +46,7 @@ abstract contract FeeVault is ReentrancyGuard {
         sink = sink_;
     }
 
-    /// @notice How every fee is split, in basis points of the fee. Rounding remainders go to the protocol.
+    /// @notice How trade and LP fees are split, in basis points of the fee. Rounding remainders go to the protocol.
     function feeSplitBps() external pure returns (uint256 containerBps, uint256 protocolBps, uint256 sinkBps) {
         return (CONTAINER_BPS, BPS - CONTAINER_BPS - SINK_BPS, SINK_BPS);
     }

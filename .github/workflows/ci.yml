@@ -16,6 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
       - run: forge --version
       - run: forge test --match-path "test/unit/*" -vvv
 
@@ -25,8 +27,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
-      - name: Build src and report sizes
-        run: forge build --sizes --json --skip test --skip script > sizes.json || true
+        with:
+          version: v1.7.1
+      - name: Build exactly what gets deployed and report sizes
+        run: forge build --sizes --json --skip test > sizes.json || true
       - name: Fail if any runtime > 24,576 B or initcode > 49,152 B
         run: python3 script/ci/check_sizes.py sizes.json
 
@@ -36,6 +40,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
       - run: forge test --match-path "test/fork/*" -vvv --gas-report
 
   slither:
@@ -44,12 +50,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install slither-analyzer==0.10.4
       - name: Run Slither (its exit code only says findings exist; the gate below decides)
-        run: slither . --filter-paths "lib/|test/|script/|src/libraries/uniswap/" --exclude-dependencies --json slither.json || true
+        run: rm -f slither.json slither.db.json; slither . --filter-paths "lib/|test/|script/|src/libraries/uniswap/" --exclude-dependencies --json slither.json || true
       - name: Fail on any finding not in the triaged baseline
         run: python3 script/ci/slither_gate.py slither.json script/ci/slither_baseline.json
       - uses: actions/upload-artifact@v4
@@ -64,6 +72,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
       - name: Simulate Deploy.s.sol against a mainnet fork with a throwaway key
         env:
           # anvil's well-known test key #0; never funded on mainnet, simulation only
@@ -76,6 +86,7 @@ jobs:
   gate2:
     name: GATE 2 dry run (anvil fork of X Layer mainnet)
     if: github.event_name == 'workflow_dispatch'
+    needs: build-artifacts
     runs-on: ubuntu-latest
     env:
       ANVIL: http://127.0.0.1:8545
@@ -86,6 +97,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - name: Same bytes as the deploy artifact
+        run: forge build --skip test
+      - uses: actions/download-artifact@v4
+        with:
+          name: forge-build
+          path: deploy-artifact
+      - name: Prove this build is byte-identical to what gets deployed
+        run: python3 script/ci/same_bytes.py out deploy-artifact/out
       - name: Start anvil fork (chain id stays 196)
         run: |
           anvil --fork-url "$XLAYER_RPC_URL" --port 8545 --auto-impersonate --silent > anvil.log 2>&1 &
@@ -135,7 +156,7 @@ jobs:
             broadcast/
 
   build-artifacts:
-    name: Build artifacts for the local deploy (forge 1.7.1, matches the deploy box)
+    name: Build artifacts for the local deploy (forge 1.7.1, the bytes that get deployed)
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -154,6 +175,7 @@ jobs:
   e2e-fork:
     name: CIRC-TEST E2E rehearsal (anvil fork, same driver as the live run)
     if: github.event_name == 'workflow_dispatch'
+    needs: build-artifacts
     runs-on: ubuntu-latest
     env:
       E2E_RPC: http://127.0.0.1:8545
@@ -164,7 +186,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
       - run: forge build --skip test
+      - uses: actions/download-artifact@v4
+        with:
+          name: forge-build
+          path: deploy-artifact
+      - name: Prove this build is byte-identical to what gets deployed
+        run: python3 script/ci/same_bytes.py out deploy-artifact/out
       - name: Start anvil fork (chain id stays 196)
         run: |
           anvil --fork-url "$XLAYER_RPC_URL" --port 8545 --auto-impersonate --silent > anvil.log 2>&1 &

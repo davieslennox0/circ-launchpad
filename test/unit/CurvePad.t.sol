@@ -171,6 +171,51 @@ contract CurvePadUnitTest is UnitBase {
         pad.createLaunch(address(nft), 1, "X", unicode"🚀🚀🚀🚀a", "", address(wokb), 0, 0);
     }
 
+    function test_create_limitsAcceptMultiByteAtExactly16And64Bytes() public {
+        string memory sym = unicode"🚀🚀🚀🚀"; // 16 bytes
+        string memory name = string.concat(sym, sym, sym, sym); // 64 bytes
+        vm.prank(creator);
+        LaunchToken t = LaunchToken(pad.createLaunch(address(nft), 1, name, sym, "", address(wokb), 0, 0));
+        assertEq(t.symbol(), sym);
+        assertEq(t.name(), name);
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.BadName.selector);
+        pad.createLaunch(address(nft), 2, string.concat(name, "a"), "X", "", address(wokb), 0, 0);
+    }
+
+    function test_create_limitsComeFirst() public {
+        string memory tooLong = _str(pad.MAX_IMAGE_URI() + 1);
+        vm.startPrank(alice); // not the holder
+        vm.expectRevert(CurvePad.BadName.selector);
+        pad.createLaunch(address(nft), 1, "", "", tooLong, address(0xBEEF), 0, 0);
+        vm.expectRevert(CurvePad.BadSymbol.selector);
+        pad.createLaunch(address(nft), 1, "X", "", tooLong, address(0xBEEF), 0, 0);
+        vm.expectRevert(CurvePad.ImageURITooLong.selector);
+        pad.createLaunch(address(nft), 1, "X", "X", tooLong, address(0xBEEF), 0, 0);
+        vm.expectRevert(FeeVault.NotHolder.selector);
+        pad.createLaunch(address(nft), 1, "X", "X", "", address(wokb), 0, 0);
+        vm.stopPrank();
+    }
+
+    function test_feeViews_describeRoundingOnBuyAndSell() public {
+        LaunchToken t = _launch(address(wokb));
+        _skipGuard();
+        (uint256 c, uint256 p, uint256 s) = pad.feeSplitBps();
+        uint256 q = 1_234_567_891_234_567_891; // not a round number: feeOn rounds up, the remainder goes to the protocol
+        vm.startPrank(alice);
+        uint256 got = pad.buy(address(t), q, 0, block.timestamp);
+        uint256 fee = (q * pad.tradeFeeBps() + 9_999) / 10_000;
+        assertEq(pad.totalAccrued(address(wokb)), fee);
+        assertEq(pad.accrued(address(wokb), _container(1)), fee * c / 10_000);
+        assertEq(pad.accrued(address(wokb), sink), fee * s / 10_000);
+        assertEq(pad.accrued(address(wokb), protocol), fee - fee * c / 10_000 - fee * s / 10_000);
+        assertGe(pad.accrued(address(wokb), protocol), fee * p / 10_000);
+        t.approve(address(pad), got);
+        pad.sell(address(t), got, 0, block.timestamp);
+        vm.stopPrank();
+        assertGt(pad.totalAccrued(address(wokb)), fee, "sells accrue too");
+    }
+
     function test_feeViews_matchWhatIsCharged() public {
         assertEq(pad.tradeFeeBps(), 100);
         (uint256 c, uint256 p, uint256 s) = pad.feeSplitBps();
