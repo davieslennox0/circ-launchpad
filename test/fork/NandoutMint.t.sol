@@ -98,10 +98,15 @@ contract NandoutMintForkTest is Test {
         assertGt(out, 0);
         assertEq(IERC20(token).balanceOf(user), out);
 
-        // Same holder relaunching the same Nand: CREATE2 salt (holder, nft, id) collides -> reverts.
+        // Same holder, same Nand, same name+ticker: CREATE2 address collides -> reverts.
         vm.prank(user);
         vm.expectRevert();
-        pad.createLaunch(Addresses.NANDOUT, id, "Again", "AGAIN", Addresses.WOKB, 0, 0);
+        pad.createLaunch(Addresses.NANDOUT, id, "Fresh Nand", "FNAND", Addresses.WOKB, 0, 0);
+        // ...but a different name/ticker changes the init code hash, so the SAME holder can launch again from the same
+        // Nand. CurvePad has no per-circuit uniqueness: "already launched" is a frontend rule (LaunchCreated by Nand).
+        vm.prank(user);
+        address again = pad.createLaunch(Addresses.NANDOUT, id, "Again", "AGAIN", Addresses.WOKB, 0, 0);
+        assertTrue(again != token, "second launch from the same Nand by the same holder succeeds on chain");
     }
 
     /// @dev Documents a gap the frontend must cover: CurvePad has no per-circuit uniqueness. After a transfer, the new

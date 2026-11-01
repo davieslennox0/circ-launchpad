@@ -17,6 +17,7 @@ const A = {
   USDT0_WOKB_POOL: "0xe3BE6A0137f1b0602Fc1a4841686f43B340a5082",
   BEM_WOKB_POOL: "0x2CcF8aa17F5DF9Fb5D51C9de12135a913fF29f7A",
   OPENER: "0x536adD8F30f03b69f6fbF29d425A816A0dC50106",
+  MULTICALL3: "0xcA11bde05977b3631167028862bE2a173976CA11",
   STATE_VIEW: "0x76Fd297e2D437cd7f76d50F01AfE6160f86e9990",
   NANDOUT: "0x8A60B4A4BCf4066F5E5F9A406fE09c5e4f52a58E",
 };
@@ -58,6 +59,14 @@ const ABI = {
   graduator: ["function poolKey(address,address) view returns (tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks))"],
   stateView: ["function getSlot0(bytes32) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)",
     "function getLiquidity(bytes32) view returns (uint128)"],
+  nandout: ["function transistors() view returns (address)", "function nextId() view returns (uint256)",
+    "function TAPEOUT_FEE() view returns (uint256)", "function ownerOf(uint256) view returns (address)",
+    "function tapeout(bytes,uint32,uint32) payable returns (uint256)",
+    "event TapedOut(uint256 indexed circuitId, address indexed author, uint32 gateCount, uint32 nState)"],
+  transistors: ["function mintPrice() view returns (uint256)", "function protocolFee() view returns (uint256)",
+    "function supplyCap() view returns (uint256)", "function minted() view returns (uint256)",
+    "function balanceOf(address,uint256) view returns (uint256)", "function mint(uint256,uint256) payable"],
+  multicall: ["function aggregate3(tuple(address target,bool allowFailure,bytes callData)[] calls) view returns (tuple(bool success,bytes returnData)[])"],
   container: ["function execute(address,uint256,bytes,uint8) payable returns (bytes)"],
 };
 
@@ -574,12 +583,12 @@ async function renderCreator(el, L) {
   if (isHolder) { $("#cl-direct", el).onclick = () => claim(true); $("#cl-cont", el).onclick = () => claim(false); }
 }
 
-async function viewLaunch() {
+async function viewLaunchAdvanced() {
   const p = state.pad, okb = state.prices.okbUsd;
   const opt = (q) => { const c = p.cfg[q.toLowerCase()]; const u = quoteUsd(q); return { c, u }; };
   const w = opt(p.wokb), b = opt(p.bem);
   $("#app").innerHTML = `
-  <div class="tp-head"><div><div class="eyebrow">Launch</div><h1>Wire a token to your Circuit</h1>
+  <div class="tp-head"><div><div class="eyebrow"><a href="#/launch" style="text-decoration:none">← Launch</a> · Advanced</div><h1>Launch from any TapeOut Circuit</h1>
     <p class="lede" style="margin:10px 0 0">You must hold the TapeOut Circuit. The token's Container is that Circuit's ERC-6551 account: it earns 50% of every fee, forever, and moves with the NFT.</p></div></div>
   <div class="cols">
     <div class="card"><div class="form">
@@ -639,6 +648,243 @@ async function viewLaunch() {
   };
 }
 
+
+// ---------------------------------------------------------------- launch flow: Pick a Nand -> (mint) -> details -> confirm
+const ONE_NAND = "0x00000002000003"; // a Nand: one NAND gate, NAND(in0, in1), nIn=2, nOut=1
+const flow = { step: 1, sel: null, name: "", sym: "", img: null, quote: null, dev: "" };
+
+async function nandoutFacts() {
+  const n = C(A.NANDOUT, ABI.nandout);
+  const [tAddr, nextId, tapeFee] = await Promise.all([n.transistors(), n.nextId(), n.TAPEOUT_FEE()]);
+  const t = C(tAddr, ABI.transistors);
+  const [price, protoFee, cap, minted] = await Promise.all([t.mintPrice(), t.protocolFee(), t.supplyCap(), t.minted()]);
+  const held = state.account ? await t.balanceOf(state.account, 0) : 0n; // spare NAND transistors skip the mint tx
+  const mintCost = (held > 0n ? 0n : price + protoFee) + tapeFee;
+  return { tAddr, nextId: Number(nextId), tapeFee, price, protoFee, cap, minted, held, mintCost, open: minted + 1n <= cap };
+}
+
+async function ownersOf(ids) { // one eth_call per 150 ids through Multicall3
+  const iface = new E.Interface(ABI.nandout), mc = C(A.MULTICALL3, ABI.multicall), out = {};
+  for (let i = 0; i < ids.length; i += 150) {
+    const chunk = ids.slice(i, i + 150);
+    const res = await mc.aggregate3(chunk.map((id) => ({ target: A.NANDOUT, allowFailure: true, callData: iface.encodeFunctionData("ownerOf", [id]) })));
+    res.forEach((r, j) => { if (r.success) out[chunk[j]] = iface.decodeFunctionResult("ownerOf", r.returnData)[0]; });
+  }
+  return out;
+}
+
+function launchedNandIds() { // any LaunchCreated for (Nandout, id) on this CurvePad, whoever launched it
+  const s = new Set();
+  for (const L of state.launches) if (L.circuitNft?.toLowerCase() === A.NANDOUT.toLowerCase()) s.add(Number(L.circuitId));
+  return s;
+}
+
+function stepsBar() {
+  const names = ["Pick a Nand", "Token", "Confirm"];
+  const cur = flow.step === "mint" ? 1 : flow.step;
+  return `<div class="steps">${names.map((n, i) => `<span class="${i + 1 === cur ? "on" : i + 1 < cur ? "done" : ""}">${i + 1 < cur ? "✓ " : ""}${i + 1} · ${n}</span>`).join("")}</div>`;
+}
+
+async function viewLaunch() {
+  if (flow.step === 1) return stepPick();
+  if (flow.step === "mint") return stepMint();
+  if (flow.step === 2) return stepDetails();
+  return stepConfirm();
+}
+
+async function stepPick() {
+  $("#app").innerHTML = `<div class="flow">${stepsBar()}<h2>Pick a Nand</h2>
+    <p class="sub">Your token is wired to one Nandout circuit. Half of every fee goes to that Nand's Container, forever.</p>
+    <div id="nandlist" class="muted mono">Reading Nandout…</div></div>`;
+  const f = await nandoutFacts();
+  const okb = state.prices.okbUsd;
+  const launched = launchedNandIds();
+  let rows = [];
+  if (state.account) {
+    const ids = Array.from({ length: f.nextId - 1 }, (_, i) => i + 1);
+    const owners = await ownersOf(ids);
+    const me = state.account.toLowerCase();
+    rows = ids.filter((id) => owners[id]?.toLowerCase() === me)
+      .map((id) => ({ id, status: launched.has(id) ? "Launched" : "Owned" }))
+      .sort((a, b) => (a.status === "Launched") - (b.status === "Launched") || a.id - b.id);
+  }
+  const mintRow = f.open ? `<button class="nand mint ${flow.sel?.kind === "mint" ? "sel" : ""}" data-k="mint">
+      <span class="mk">${flow.sel?.kind === "mint" ? "✓" : ""}</span><span class="n">+ Mint</span>
+      <span class="info">a new Nand · #${f.nextId} · ${E.formatEther(f.mintCost)} OKB (${usd(units(f.mintCost, 18) * okb)})</span>
+      <span class="st">Available</span></button>` : "";
+  const rowHtml = (r) => {
+    const on = flow.sel?.kind === "owned" && flow.sel.id === r.id, dis = r.status === "Launched";
+    return `<button class="nand ${on ? "sel" : ""}" data-k="owned" data-id="${r.id}" ${dis ? "disabled" : ""}>
+      <span class="mk">${on ? "✓" : ""}</span><span class="n">#${r.id}</span><span class="info"></span>
+      <span class="st ${r.status === "Owned" ? "owned" : ""}">${r.status}</span></button>`;
+  };
+  const list = $("#nandlist");
+  list.className = "";
+  list.innerHTML = `${rows.length > 12 ? `<div class="jump"><input id="jump" inputmode="numeric" placeholder="Jump to #"></div>` : ""}
+    <div class="nands">${mintRow}${rows.map(rowHtml).join("")}</div>
+    ${!state.account ? `<p class="muted" style="margin:14px 0">Connect your wallet to see the Nands you hold.</p>`
+      : rows.length ? "" : `<p class="muted" style="margin:14px 0">You don't hold a Nand yet. Mint one above.</p>`}
+    <div class="pinned"><button class="btn hub block" id="cont" ${flow.sel ? "" : "disabled"}>${state.account ? "Continue" : "Connect wallet"}</button></div>
+    <details class="adv"><summary>Advanced: launch from another TapeOut circuit</summary>
+      <p class="muted" style="font-size:13px">Any TapeOut processor's circuit works if you hold it. <a href="#/launch/advanced">Open the manual circuit form →</a></p></details>`;
+  list.querySelector(".nands").onclick = (e) => {
+    const b = e.target.closest(".nand"); if (!b || b.disabled) return;
+    flow.sel = b.dataset.k === "mint" ? { kind: "mint", facts: f } : { kind: "owned", id: Number(b.dataset.id) };
+    list.querySelectorAll(".nand").forEach((x) => { const on = x === b; x.classList.toggle("sel", on); x.querySelector(".mk").textContent = on ? "✓" : ""; });
+    $("#cont").disabled = false;
+  };
+  const j = $("#jump");
+  if (j) j.oninput = () => {
+    const v = j.value.replace(/\D/g, "");
+    list.querySelectorAll(".nand[data-id]").forEach((x) => { x.hidden = v !== "" && !x.dataset.id.startsWith(v); });
+  };
+  $("#cont").onclick = async () => {
+    if (!state.account) { await connect(); return route(); }
+    if (!flow.sel) return;
+    flow.step = flow.sel.kind === "mint" ? "mint" : 2;
+    route();
+  };
+}
+
+async function stepMint() {
+  const f = await nandoutFacts();
+  const okb = state.prices.okbUsd;
+  const twoTx = f.held === 0n;
+  $("#app").innerHTML = `<div class="flow">${stepsBar()}<h2>Mint a new Nand</h2>
+    <p class="sub">A Nand is a one-gate Nandout circuit (a single NAND). Minting taps it out on TapeOut and sends the NFT to your wallet.</p>
+    <div class="sheet">
+      <div class="warnline"><span class="pill complete">X Layer mainnet</span><span class="pill">${twoTx ? "2 transactions" : "1 transaction"}</span><span class="pill">next id #${f.nextId}</span></div>
+      <dl class="kv">
+        ${twoTx ? `<dt>NAND transistor (to the Nandout creator)</dt><dd>${E.formatEther(f.price)} OKB</dd>
+        <dt>TapeOut mint fee</dt><dd>${E.formatEther(f.protoFee)} OKB</dd>` : `<dt>NAND transistor</dt><dd>already in your wallet</dd>`}
+        <dt>TapeOut tape-out fee</dt><dd>${E.formatEther(f.tapeFee)} OKB</dd>
+        <dt><b style="color:var(--ink)">Total</b></dt><dd><b style="color:var(--ink)">${E.formatEther(f.mintCost)} OKB · ${usd(units(f.mintCost, 18) * okb)}</b></dd>
+      </dl>
+      <div class="note">Plus gas (a fraction of a cent). The ids are sequential, so if someone mints first you get the next one.</div>
+      <div id="mintlog" class="mono muted" style="font-size:12.5px"></div>
+      <div class="pinned" style="position:static;background:none;padding-bottom:0"><button class="btn hub block" id="mintgo">Mint Nand</button>
+      <button class="btn ghost block" id="back" style="margin-top:8px">Back</button></div>
+    </div></div>`;
+  $("#back").onclick = () => { flow.step = 1; route(); };
+  $("#mintgo").onclick = async () => {
+    const log = (m) => { $("#mintlog").innerHTML += esc(m) + "<br>"; };
+    const btn = $("#mintgo"); btn.disabled = true; btn.textContent = "Minting…";
+    try {
+      const s = await signer();
+      if (twoTx) {
+        log("1/2 buying 1 NAND transistor: confirm in your wallet");
+        const tx = await C(f.tAddr, ABI.transistors, s).mint(0, 1, { value: f.price + f.protoFee });
+        log("sent " + short(tx.hash)); await tx.wait();
+      }
+      log(`${twoTx ? "2/2" : "1/1"} tape-out: confirm in your wallet`);
+      const tx2 = await C(A.NANDOUT, ABI.nandout, s).tapeout(ONE_NAND, 2, 1, { value: f.tapeFee });
+      log("sent " + short(tx2.hash));
+      const r = await tx2.wait();
+      const iface = new E.Interface(ABI.nandout);
+      const ev = r.logs.map((l) => { try { return iface.parseLog(l); } catch { return null; } }).find((e) => e?.name === "TapedOut");
+      if (!ev) throw new Error("TapedOut event not found");
+      const id = Number(ev.args.circuitId);
+      log(`minted Nand #${id}`);
+      toast(`Nand #${id} is yours`);
+      flow.sel = { kind: "owned", id }; flow.step = 2; route();
+    } catch (e) {
+      log("error: " + (e.shortMessage || e.message).slice(0, 160));
+      btn.disabled = false; btn.textContent = "Try again";
+    }
+  };
+}
+
+async function stepDetails() {
+  const p = state.pad;
+  flow.quote = flow.quote || p.wokb;
+  const b = p.cfg[p.bem.toLowerCase()];
+  $("#app").innerHTML = `<div class="flow">${stepsBar()}<h2>Token</h2>
+    <p class="sub">Wired to <b class="mono" style="color:var(--ink)">Nand #${flow.sel.id}</b>. <a href="javascript:void 0" id="change" class="muted">Change</a></p>
+    <div class="form">
+      <div class="imgpick"><div class="prev" id="prev"></div>
+        <div><label class="btn" for="img">Choose image</label><input type="file" id="img" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+        <div class="muted" style="font-size:12px;margin-top:6px">Square, under 1 MB. Preview only for now (see note).</div></div></div>
+      <div class="two">
+        <div class="field"><label>Name</label><input id="name" maxlength="40" placeholder="My Token" value="${esc(flow.name)}"></div>
+        <div class="field"><label>Ticker</label><input id="sym" maxlength="10" placeholder="TICKER" style="text-transform:uppercase" value="${esc(flow.sym)}"></div>
+      </div>
+      <div><div class="muted mono" style="font-size:11.5px;margin-bottom:6px">QUOTE</div><div class="qopts">
+        <button class="qopt" data-q="${p.wokb}"><b>OKB</b><small>default · paid as WOKB</small></button>
+        <button class="qopt" data-q="${p.bem}"><b>BEM</b><small class="mono" style="color:var(--blue-ink)">volatile quote</small></button></div></div>
+      <div id="vol" class="note vol" hidden>BEM is a volatile quote: the tape-out target is fixed at ${num(units(b.raise, 8), 2)} BEM (≈ ${usd(units(b.raise, 8) * state.prices.bemUsd)} today), so market caps in USD move with BEM.</div>
+      <div class="field"><label><span>Dev buy (optional)</span><span id="devu"></span></label><input id="dev" inputmode="decimal" placeholder="0.0" value="${esc(flow.dev)}"></div>
+      <div class="note">The dev buy is exempt from the anti-snipe cap and happens in the launch transaction.</div>
+      <div class="note warn">Token images: the launch contracts store name and ticker only, so the image isn't saved anywhere yet. Hosting it needs a decision (IPFS pinning or an on-chain metadata registry).</div>
+    </div>
+    <div class="pinned"><button class="btn hub block" id="next">Review</button><button class="btn ghost block" id="back" style="margin-top:8px">Back</button></div></div>`;
+  const prev = $("#prev");
+  const paint = () => { prev.style.backgroundImage = flow.img ? `url(${flow.img})` : ""; prev.textContent = flow.img ? "" : ($("#sym").value || "?").slice(0, 4).toUpperCase(); prev.style.background = flow.img ? "" : "var(--hub)"; if (flow.img) prev.style.backgroundImage = `url(${flow.img})`; };
+  const qsel = () => {
+    document.querySelectorAll(".qopt").forEach((x) => x.classList.toggle("on", x.dataset.q === flow.quote));
+    $("#vol").hidden = !isBem(flow.quote);
+    $("#devu").textContent = isBem(flow.quote) ? "BEM" : "OKB";
+  };
+  document.querySelectorAll(".qopt").forEach((x) => x.onclick = () => { flow.quote = x.dataset.q; qsel(); });
+  $("#img").onchange = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    if (file.size > 1_000_000) { toast("Image over 1 MB"); return; }
+    const r = new FileReader(); r.onload = () => { flow.img = r.result; paint(); }; r.readAsDataURL(file);
+  };
+  $("#sym").oninput = paint;
+  $("#change").onclick = () => { flow.step = 1; route(); };
+  $("#back").onclick = () => { flow.step = 1; route(); };
+  $("#next").onclick = () => {
+    flow.name = $("#name").value.trim(); flow.sym = $("#sym").value.trim().toUpperCase(); flow.dev = $("#dev").value.trim();
+    if (!flow.name || !flow.sym) { toast("Name and ticker are required"); return; }
+    if (flow.dev && !(+flow.dev >= 0)) { toast("Dev buy must be a number"); return; }
+    flow.step = 3; route();
+  };
+  qsel(); paint();
+}
+
+async function stepConfirm() {
+  const p = state.pad, c = p.cfg[flow.quote.toLowerCase()], qU = quoteUsd(flow.quote), T = p.totalTokens;
+  const bem = isBem(flow.quote), dev = flow.dev ? +flow.dev : 0;
+  const devWei = dev ? E.parseUnits(flow.dev, c.dec) : 0n;
+  let devOut = 0n;
+  // Dev-buy preview on a fresh curve: tokensOut = vT0 - vQ0*vT0 / (vQ0 + net), net = 99% of gross
+  if (devWei > 0n) { const net = devWei - devWei / 100n; devOut = c.vT0 - (c.vQ0 * c.vT0) / (c.vQ0 + net); if (devOut > c.cs) devOut = c.cs; }
+  const gp = (await rp.getFeeData()).gasPrice || 0n;
+  const gasOkb = units(gp * 900000n, 18); // createLaunch ≈ 760k gas (+ dev buy), measured in the e2e run
+  const totalOkb = (bem ? 0 : dev) + gasOkb;
+  $("#app").innerHTML = `<div class="flow">${stepsBar()}<h2>Confirm launch</h2>
+    <div class="sheet">
+      <div class="warnline"><span class="pill complete">X Layer mainnet</span><span class="pill" style="color:var(--red);border-color:rgba(194,99,90,.45)">Irreversible</span>${bem ? '<span class="pill vol">BEM · volatile quote</span>' : ""}</div>
+      <div style="display:flex;gap:14px;align-items:center;margin-bottom:6px">
+        <div class="prev" style="width:56px;height:56px;border-radius:12px;display:grid;place-items:center;font:600 14px var(--mono);color:#fff;background:${flow.img ? `center/cover url(${flow.img})` : "var(--hub)"}">${flow.img ? "" : esc(flow.sym.slice(0, 4))}</div>
+        <div><div style="font-size:20px;color:var(--ink);font-weight:600">${esc(flow.name)} <span class="muted">$${esc(flow.sym)}</span></div>
+        <div class="muted mono" style="font-size:12.5px">wired to Nand #${flow.sel.id}</div></div></div>
+      <dl class="kv">
+        <dt>Quote</dt><dd>${bem ? "BEM (volatile)" : "OKB (WOKB)"}</dd>
+        <dt>Launch market cap</dt><dd>${usd(c.p0 * T * qU)}</dd>
+        <dt>Tape-out at</dt><dd>${num(units(c.raise, c.dec), 2)} ${c.sym} raised · ${usd(c.pEnd * T * qU)} MC</dd>
+        <dt>Dev buy</dt><dd>${dev ? `${flow.dev} ${bem ? "BEM" : "OKB"} → ~${num(units(devOut, 18), 2)} ${esc(flow.sym)}` : "none"}</dd>
+        <dt>Network fee (est.)</dt><dd>~${gasOkb.toPrecision(2)} OKB</dd>
+        <dt><b style="color:var(--ink)">Total cost</b></dt><dd><b style="color:var(--ink)">${bem && dev ? `${flow.dev} BEM + ` : ""}~${totalOkb.toPrecision(3)} OKB · ${usd(totalOkb * state.prices.okbUsd + (bem ? dev * state.prices.bemUsd : 0))}</b></dd>
+      </dl>
+      <div class="note">Name and ticker are permanent. Half of every trading fee goes to Nand #${flow.sel.id}'s Container; at tape-out the liquidity is locked forever.</div>
+      <label class="check"><input type="checkbox" id="ack"><span>I understand this launches on X Layer mainnet and can't be undone.</span></label>
+      <button class="btn hub block" id="go" disabled>Launch ${esc(flow.sym)}</button>
+      <button class="btn ghost block" id="back" style="margin-top:8px">Back</button>
+    </div></div>`;
+  $("#ack").onchange = (e) => { $("#go").disabled = !e.target.checked; };
+  $("#back").onclick = () => { flow.step = 2; route(); };
+  $("#go").onclick = () => sendTx("Launch", async (s) => {
+    const owner = await C(A.NANDOUT, ABI.nandout).ownerOf(flow.sel.id);
+    if (owner.toLowerCase() !== state.account.toLowerCase()) throw new Error(`you no longer hold Nand #${flow.sel.id}`);
+    if (launchedNandIds().has(flow.sel.id)) throw new Error(`Nand #${flow.sel.id} already has a launch`);
+    const pad = C(p.addr, ABI.pad, s);
+    if (!bem) return pad.createLaunch(A.NANDOUT, flow.sel.id, flow.name, flow.sym, flow.quote, 0, 0, { value: devWei });
+    if (devWei > 0n) { const t = C(flow.quote, ABI.erc20, s); if ((await t.allowance(state.account, p.addr)) < devWei) await (await t.approve(p.addr, devWei)).wait(); }
+    return pad.createLaunch(A.NANDOUT, flow.sel.id, flow.name, flow.sym, flow.quote, devWei, 0);
+  });
+}
+
 async function viewCreator() {
   $("#app").innerHTML = `
   <div class="tp-head"><div><div class="eyebrow">Creator fees</div><h1>Your Circuit's earnings</h1>
@@ -674,6 +920,7 @@ async function route() {
     document.querySelectorAll("nav.links a").forEach((a) => a.classList.toggle("on",
       (a.dataset.nav === "floor" && h === "/") || (a.dataset.nav !== "floor" && h.startsWith("/" + a.dataset.nav))));
     if (h.startsWith("/t/")) await viewToken(h.slice(3));
+    else if (h.startsWith("/launch/advanced")) await viewLaunchAdvanced();
     else if (h.startsWith("/launch")) await viewLaunch();
     else if (h.startsWith("/creator")) await viewCreator();
     else await viewFloor();
