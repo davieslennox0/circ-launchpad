@@ -101,7 +101,7 @@ contract CurvePadUnitTest is UnitBase {
         string memory uri = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
         vm.recordLogs();
         vm.prank(creator);
-        address t = pad.createLaunch(address(nft), 1, "Logo", "LOGO", uri, address(wokb), 0, 0);
+        address t = pad.createLaunch(address(nft), 1, "Logo", "LOGO", "", uri, address(wokb), 0, 0);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool found;
         for (uint256 i; i < logs.length; ++i) {
@@ -125,10 +125,10 @@ contract CurvePadUnitTest is UnitBase {
         bytes memory over = bytes.concat(max, "a");
         vm.prank(creator);
         vm.expectRevert(CurvePad.ImageURITooLong.selector);
-        pad.createLaunch(address(nft), 1, "X", "X", string(over), address(wokb), 0, 0);
+        pad.createLaunch(address(nft), 1, "X", "X", "", string(over), address(wokb), 0, 0);
         assertFalse(pad.isLaunched(address(nft), 1), "rejected launch does not consume the circuit");
         vm.prank(creator);
-        pad.createLaunch(address(nft), 1, "X", "X", string(max), address(wokb), 0, 0);
+        pad.createLaunch(address(nft), 1, "X", "X", "", string(max), address(wokb), 0, 0);
         assertTrue(pad.isLaunched(address(nft), 1));
     }
 
@@ -136,6 +136,22 @@ contract CurvePadUnitTest is UnitBase {
         vm.prank(creator);
         pad.createLaunch(address(nft), 2, "X", "X", "", address(bem), 0, 0);
         assertTrue(pad.isLaunched(address(nft), 2));
+    }
+
+    function test_isLaunched_revertAfterFlagWrite_rollsBack() public {
+        // The flag is written before the dev-buy; a dev-buy Slippage revert must roll it back with everything else.
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.Slippage.selector);
+        pad.createLaunch{value: 1 ether}(address(nft), 1, "X", "X", "", address(wokb), 0, type(uint256).max);
+        assertFalse(pad.isLaunched(address(nft), 1), "flag rolled back");
+        // BadValue after the flag write (WOKB launch with devBuyAmount != 0) also rolls back
+        vm.prank(creator);
+        vm.expectRevert(CurvePad.BadValue.selector);
+        pad.createLaunch(address(nft), 1, "X", "X", "", address(wokb), 1, 0);
+        assertFalse(pad.isLaunched(address(nft), 1));
+        vm.prank(creator);
+        pad.createLaunch(address(nft), 1, "X", "X", "", address(wokb), 0, 0);
+        assertTrue(pad.isLaunched(address(nft), 1), "circuit still launchable after the failed attempts");
     }
 
     function test_isLaunched_failedLaunchLeavesItUnset() public {
@@ -147,7 +163,7 @@ contract CurvePadUnitTest is UnitBase {
 
     function test_create_devBuyExemptFromAntiSnipe() public {
         vm.prank(creator);
-        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", address(wokb), 0, 0));
+        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", "", address(wokb), 0, 0));
         assertGt(t.balanceOf(creator), pad.MAX_EARLY_BUY(), "dev-buy above the early cap");
     }
 
@@ -163,7 +179,7 @@ contract CurvePadUnitTest is UnitBase {
     function test_create_bemRejectsNativeValue() public {
         vm.prank(creator);
         vm.expectRevert(CurvePad.BadValue.selector);
-        pad.createLaunch{value: 1}(address(nft), 2, "X", "X", address(bem), 0, 0);
+        pad.createLaunch{value: 1}(address(nft), 2, "X", "X", "", address(bem), 0, 0);
     }
 
     // ------------------------------------------------------------- trading
@@ -452,7 +468,7 @@ contract CurvePadUnitTest is UnitBase {
 
     function test_antiSnipe_devBuyNotCounted() public {
         vm.prank(creator);
-        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", address(wokb), 0, 0));
+        LaunchToken t = LaunchToken(pad.createLaunch{value: 20 ether}(address(nft), 1, "X", "X", "", address(wokb), 0, 0));
         assertGt(t.balanceOf(creator), pad.MAX_EARLY_BUY());
         vm.prank(alice);
         pad.buy(address(t), 50 ether, 0, block.timestamp);
@@ -525,7 +541,7 @@ contract CurvePadUnitTest is UnitBase {
     function test_devBuyCanCompleteCurve() public {
         vm.prank(creator);
         LaunchToken t =
-            LaunchToken(pad.createLaunch{value: 1_000 ether}(address(nft), 1, "X", "X", address(wokb), 0, 0));
+            LaunchToken(pad.createLaunch{value: 1_000 ether}(address(nft), 1, "X", "X", "", address(wokb), 0, 0));
         (,,, uint256 left, CurvePad.Status st) = _curve(address(t));
         assertEq(left, 0);
         assertEq(uint8(st), uint8(CurvePad.Status.Complete));
