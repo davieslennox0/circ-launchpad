@@ -6,7 +6,7 @@
 "use strict";
 const E = ethers;
 const { esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, recommendDirect, parseContainerRevert,
-  uncollectedFee, byteLength } = CircCore;
+  uncollectedFee, encodeSwap, byteLength } = CircCore;
 
 const CHAIN_ID = 196;
 const RPC = "https://rpc.xlayer.tech";
@@ -21,6 +21,9 @@ const A = {
   USDT0_WOKB_POOL: "0xe3BE6A0137f1b0602Fc1a4841686f43B340a5082",
   BEM_WOKB_POOL: "0x2CcF8aa17F5DF9Fb5D51C9de12135a913fF29f7A",
   OPENER: "0x536adD8F30f03b69f6fbF29d425A816A0dC50106",
+  UR: "0x1cd182C94fcF42277B80DBB9060F88024809E61E",
+  PERMIT2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+  QUOTER: "0x8928074CA1b241D8Ec02815881c1Af11E8bC5219",
   MULTICALL3: "0xcA11bde05977b3631167028862bE2a173976CA11",
   STATE_VIEW: "0x76Fd297e2D437cd7f76d50F01AfE6160f86e9990",
   NANDOUT: "0x8A60B4A4BCf4066F5E5F9A406fE09c5e4f52a58E",
@@ -53,7 +56,11 @@ const ABI = {
     "event LaunchCreated(address indexed token,address indexed quote,address indexed circuitNft,uint256 circuitId,address container,address creator,string imageURI)",
   ],
   padV1Event: ["event LaunchCreated(address indexed token,address indexed quote,address indexed circuitNft,uint256 circuitId,address container,address creator)"],
-  locker: ["function accrued(address,address) view returns (uint256)", "function claimCreator(address,address,bool)"],
+  locker: ["function accrued(address,address) view returns (uint256)", "function claimCreator(address,address,bool)",
+    "function positionManager() view returns (address)", "function collect(uint256)"],
+  ur: ["function execute(bytes,bytes[],uint256) payable"],
+  permit2: ["function approve(address,address,uint160,uint48)", "function allowance(address,address,address) view returns (uint160,uint48,uint48)"],
+  quoter: ["function quoteExactInputSingle(tuple(tuple(address,address,uint24,int24,address),bool,uint128,bytes)) returns (uint256,uint256)"],
   erc20: [
     "function name() view returns (string)", "function symbol() view returns (string)",
     "function decimals() view returns (uint8)", "function balanceOf(address) view returns (uint256)",
@@ -64,8 +71,11 @@ const ABI = {
   factory: ["function isCPU(address) view returns (bool)"],
   opener: ["function FEE() view returns (uint256)", "function open(address,uint256) payable"],
   pool: ["function slot0() view returns (uint160,int24,uint16,uint16,uint16,uint8,bool)", "function token0() view returns (address)"],
-  graduator: ["function poolKey(address,address) view returns (tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks))"],
-  stateView: ["function getSlot0(bytes32) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)"],
+  graduator: ["function poolKey(address,address) view returns (tuple(address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks))",
+    "function TICK_LOWER() view returns (int24)", "function TICK_UPPER() view returns (int24)"],
+  stateView: ["function getSlot0(bytes32) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)",
+    "function getFeeGrowthInside(bytes32,int24,int24) view returns (uint256,uint256)",
+    "function getPositionInfo(bytes32,address,int24,int24,bytes32) view returns (uint128,uint256,uint256)"],
   nandout: ["function transistors() view returns (address)", "function nextId() view returns (uint256)",
     "function TAPEOUT_FEE() view returns (uint256)", "function ownerOf(uint256) view returns (address)",
     "function tapeout(bytes,uint32,uint32) payable returns (uint256)",
@@ -449,13 +459,7 @@ async function viewToken(addr) {
       <button class="btn hub block" id="gradbtn">Tape out now</button>`;
     $("#gradbtn").onclick = () => sendTx("Tape out", (s) => C(state.pad.addr, ABI.pad, s).graduate(L.token));
   } else {
-    box.innerHTML = `<h3>Taped out <small>Uniswap v4 · 1% fee · locked</small></h3>
-      <dl class="kv"><dt>Pool</dt><dd>${L.poolId ? short(L.poolId) : "–"}</dd><dt>Locked position</dt><dd>${grad ? "#" + grad.positionId : "–"}</dd>
-      <dt>Hook</dt><dd><a href="${EXPLORER}/address/${state.pad.hook}" target="_blank" rel="noopener">${short(state.pad.hook)}</a></dd>
-      <dt>Locker</dt><dd><a href="${EXPLORER}/address/${state.pad.locker}" target="_blank" rel="noopener">${short(state.pad.locker)}</a></dd></dl>
-      <div class="note">The curve is closed. Trade in the v4 pool through Uniswap's Universal Router or any aggregator that routes Circ hook pools
-      (OKX DEX routing is pending their integration). LP fees keep flowing 50/30/20 to the Container, protocol and sink.</div>
-      ${grad ? `<a class="btn block" href="${EXPLORER}/tx/${grad.tx}" target="_blank" rel="noopener">Graduation tx ↗</a>` : ""}`;
+    renderPoolTrade(box, L, grad);
   }
   renderCreator($("#creator"), L);
 }
@@ -557,52 +561,71 @@ function renderTrade(box, L, guardLeft) {
 }
 
 // Container withdraw fee: TapeOut charges it per execute; read it live from the Container's fee revert (0xafd49700).
-async function containerFee(container, holder) {
+async function containerState(container, holder) { // "none" | "unpaid" | "open" | "unknown", plus the per-execute fee
+  if ((await rp.getCode(container)) === "0x") return { state: "none", fee: null };
   try {
     const data = new E.Interface(ABI.container).encodeFunctionData("execute", [E.ZeroAddress, 0, "0x", 0]);
     await rp.call({ to: container, from: holder, data });
-    return 0n;
+    return { state: "open", fee: 0n };
   } catch (e) {
-    const d = e?.data || e?.info?.error?.data || "";
-    const m = typeof d === "string" && d.match(/^0xafd49700([0-9a-f]{64})([0-9a-f]{64})/i);
-    return m ? BigInt("0x" + m[2]) : null;
+    return parseContainerRevert(e?.data || e?.info?.error?.data || e?.revert?.data);
   }
+}
+
+// Fees a locked position has earned but nobody has collected yet. Read from v4's fee growth, so no transaction is needed.
+async function uncollectedLpFees(L, positionId) {
+  const p = state.pad, sv = C(A.STATE_VIEW, ABI.stateView), g = C(p.graduator, ABI.graduator);
+  const [lo, hi, posm] = await Promise.all([g.TICK_LOWER(), g.TICK_UPPER(), C(p.locker, ABI.locker).positionManager()]);
+  const salt = E.zeroPadValue(E.toBeHex(positionId), 32);
+  const [[now0, now1], [liq, last0, last1], key] = await Promise.all([
+    sv.getFeeGrowthInside(L.poolId, lo, hi), sv.getPositionInfo(L.poolId, posm, lo, hi, salt), g.poolKey(L.token, L.quote)]);
+  const fee0 = uncollectedFee(liq, now0, last0), fee1 = uncollectedFee(liq, now1, last1);
+  const tokenIs0 = key.currency0.toLowerCase() === L.token.toLowerCase();
+  return { token: tokenIs0 ? fee0 : fee1, quote: tokenIs0 ? fee1 : fee0 };
 }
 
 async function renderCreator(el, L) {
   el.innerHTML = `<h3>Creator fees <small>${circuitLabel(L)}</small></h3><div class="muted skel">loading</div>`;
   const p = state.pad, lockerC = C(p.locker, ABI.locker);
-  const nft = C(L.circuitNft, ABI.nft);
-  const [holder, code, openFee] = await Promise.all([nft.ownerOf(L.circuitId), rp.getCode(L.container), C(A.OPENER, ABI.opener).FEE().catch(() => null)]);
-  const opened = code && code !== "0x";
-  const fee = opened ? await containerFee(L.container, holder) : null;
+  const [holder, openFee] = await Promise.all([C(L.circuitNft, ABI.nft).ownerOf(L.circuitId), C(A.OPENER, ABI.opener).FEE().catch(() => null)]);
+  const cs = await containerState(L.container, holder);
+  const opened = cs.state === "open";
   const assets = [{ a: L.quote, sym: L.cfg.sym, dec: L.cfg.dec }, { a: L.token, sym: L.symbol, dec: 18 }];
   const rows = await Promise.all(assets.map(async (x) => {
     const [pa, la, cb] = await Promise.all([p.contract.accrued(x.a, L.container), lockerC.accrued(x.a, L.container), C(x.a, ABI.erc20).balanceOf(L.container)]);
     return { ...x, claim: pa + la, pa, la, cb };
   }));
-  const q = rows[0];
+  const positionId = INDEX?.launches?.[L.token.toLowerCase()]?.graduated?.positionId;
+  const lp = L.status === 2 && positionId != null ? await uncollectedLpFees(L, positionId).catch(() => null) : null;
+  const q = rows[0], t = rows[1];
   const claimOkb = units(q.claim, q.dec) * (isBem(L.quote) ? state.prices.bemUsd / state.prices.okbUsd : 1);
-  const feeOkb = fee != null ? units(fee, 18) : null;
+  const feeOkb = cs.fee != null ? units(cs.fee, 18) : null;
   const openOkb = openFee != null ? units(openFee, 18) : null;
-  // FRONTEND_NOTES rule: recommend the direct claim when the value is < 10x the withdraw fee, or the Container is not
-  // opened yet and the value is below the open fee.
-  const recDirect = (!opened && openOkb != null && claimOkb < openOkb) || (feeOkb != null && claimOkb < 10 * feeOkb) || feeOkb == null;
+  const recDirect = recommendDirect({ claimOkb, opened, openOkb, feeOkb });
   const isHolder = state.account && state.account.toLowerCase() === holder.toLowerCase();
+  const containerLabel = { open: "opened", none: "not opened", unpaid: "deployed, open fee not paid", unknown: "status unknown" }[cs.state];
+  const lpOwed = lp && (lp.token > 0n || lp.quote > 0n);
+  const withdrawable = opened ? rows.filter((r) => r.cb > 0n) : [];
   el.innerHTML = `<h3>Creator fees <small>${circuitLabel(L)}</small></h3>
     <dl class="kv">
       ${rows.map((r) => `<dt>Claimable ${esc(r.sym)}</dt><dd>${num(units(r.claim, r.dec), 6)}</dd>`).join("")}
-      <dt>Container</dt><dd><a href="${EXPLORER}/address/${L.container}" target="_blank" rel="noopener">${short(L.container)}</a> · ${opened ? "opened" : "not opened"}</dd>
+      <dt>Container</dt><dd><a href="${EXPLORER}/address/${L.container}" target="_blank" rel="noopener">${short(L.container)}</a> · ${containerLabel}</dd>
       ${rows.map((r) => `<dt>Container balance ${esc(r.sym)}</dt><dd>${num(units(r.cb, r.dec), 6)}</dd>`).join("")}
       <dt>Container withdraw fee</dt><dd>${feeOkb != null ? feeOkb + " OKB / withdraw" : opened ? "unknown" : `open first: ${openOkb ?? "?"} OKB once`}</dd>
       <dt>Holder</dt><dd>${short(holder)}${isHolder ? " (you)" : ""}</dd>
     </dl>
+    ${lp ? `<div class="route"><h4>LP fees from the pool</h4>
+      <p>Earned but not yet collected: ${num(units(lp.quote, q.dec), 6)} ${esc(q.sym)} and ${num(units(lp.token, 18), 4)} ${esc(t.sym)} (whole pool share, before the split). Collecting adds the creator share to Claimable above. Anyone can collect.</p>
+      <button class="btn block" id="lp-collect" ${lpOwed ? "" : "disabled"}>${lpOwed ? "Collect LP fees" : "Nothing to collect yet"}</button></div>` : ""}
     <div class="route ${recDirect ? "rec" : ""}"><h4>Claim to your wallet ${recDirect ? '<span class="tag">RECOMMENDED</span>' : ""}</h4>
-      <p>Direct holder claim. Gas only, paid now to the Circuit's current holder.${recDirect ? " Best for small amounts: the Container withdraw fee would eat a large share." : ""}</p>
+      <p>Direct holder claim. Gas only, paid now to the Circuit's current holder.${recDirect ? " Best for small amounts: the Container's fees would eat a large share." : ""}</p>
       <button class="btn block" id="cl-direct" ${isHolder ? "" : "disabled"}>${isHolder ? "Claim to wallet" : "Holder only"}</button></div>
     <div class="route ${recDirect ? "" : "rec"}"><h4>Send to the Container ${recDirect ? "" : '<span class="tag">RECOMMENDED</span>'}</h4>
       <p>Fees stay with the Circuit NFT (they move with it on sale). Withdrawing later costs ${feeOkb != null ? feeOkb + " OKB per withdraw" : "the TapeOut withdraw fee"}${opened ? "" : ` plus a one-time ${openOkb ?? "?"} OKB open`}.</p>
-      <button class="btn block" id="cl-cont" ${isHolder ? "" : "disabled"}>${isHolder ? "Claim to Container" : "Holder only"}</button></div>
+      <button class="btn block" id="cl-cont" ${isHolder ? "" : "disabled"}>${isHolder ? "Claim to Container" : "Holder only"}</button>
+      ${opened ? "" : `<button class="btn block" id="ct-open" style="margin-top:8px" ${openFee != null ? "" : "disabled"}>Open the Container (${openOkb ?? "?"} OKB, anyone can pay)</button>`}
+      ${withdrawable.map((r, i) => `<button class="btn block" data-wd="${i}" style="margin-top:8px" ${isHolder ? "" : "disabled"}>${isHolder ? `Withdraw ${num(units(r.cb, r.dec), 6)} ${esc(r.sym)} to wallet (${feeOkb ?? "?"} OKB fee)` : "Holder only"}</button>`).join("")}
+    </div>
     <div class="note">Fees arrive as ${isBem(L.quote) ? "BEM" : "WOKB (wrapped OKB)"} plus the launch token, not native OKB.</div>`;
   const claim = (toHolder) => sendTx(toHolder ? "Claim to wallet" : "Claim to Container", async (s) => {
     // One transaction per vault and asset, each confirmed before the next, so the signature count on screen is true.
@@ -621,6 +644,84 @@ async function renderCreator(el, L) {
     return tx;
   });
   if (isHolder) { $("#cl-direct", el).onclick = () => claim(true); $("#cl-cont", el).onclick = () => claim(false); }
+  const col = $("#lp-collect", el);
+  if (col && lpOwed) col.onclick = () => sendTx("Collect LP fees", (s) => C(p.locker, ABI.locker, s).collect(positionId));
+  const op = $("#ct-open", el);
+  if (op && openFee != null) op.onclick = () => sendTx("Open Container", (s) => C(A.OPENER, ABI.opener, s).open(L.circuitNft, L.circuitId, { value: openFee }));
+  if (isHolder) el.querySelectorAll("[data-wd]").forEach((b) => b.onclick = () => {
+    const r = withdrawable[+b.dataset.wd];
+    const xfer = new E.Interface(["function transfer(address,uint256)"]).encodeFunctionData("transfer", [state.account, r.cb]);
+    sendTx(`Withdraw ${r.sym}`, async (s) => {
+      const now = await containerState(L.container, state.account); // the fee is TapeOut's and can change: read it at send time
+      if (now.state !== "open" || now.fee == null) throw new Error("the Container isn't ready to withdraw");
+      return C(L.container, ABI.container, s).execute(r.a, 0, xfer, 0, { value: now.fee });
+    });
+  });
+}
+
+// ---- taped-out tokens trade in their v4 pool through Universal Router 2.1.2. OKB launches pay and receive native OKB.
+function renderPoolTrade(box, L, grad) {
+  const cfg = L.cfg, qd = cfg.dec, okbQ = !isBem(L.quote), qName = okbQ ? "OKB" : "BEM", z = E.AbiCoder.defaultAbiCoder();
+  let side = "buy", last = null, seq = 0;
+  box.innerHTML = `<h3>Trade <small>Uniswap v4 pool · taped out</small></h3>
+    <div class="trade-tabs"><button class="buy on" data-s="buy">Buy</button><button class="sell" data-s="sell">Sell</button></div>
+    <div class="field"><label><span id="inlab">You pay (${qName})</span><span id="bal"></span></label><input id="amt" inputmode="decimal" placeholder="0.0"></div>
+    <dl class="kv" id="pv"><dt>You receive</dt><dd>–</dd></dl>
+    <button class="btn hub block" id="go">${state.account ? "Buy " + esc(L.symbol) : "Connect wallet"}</button>
+    <div class="note">Swaps go through Uniswap's Universal Router into this launch's locked-liquidity pool. Slippage limit 1%.</div>
+    <dl class="kv"><dt>Pool</dt><dd>${L.poolId ? short(L.poolId) : "–"}</dd><dt>Locked position</dt><dd>${grad ? "#" + grad.positionId : "–"}</dd>
+      <dt>Hook</dt><dd><a href="${EXPLORER}/address/${state.pad.hook}" target="_blank" rel="noopener">${short(state.pad.hook)}</a></dd>
+      <dt>Locker</dt><dd><a href="${EXPLORER}/address/${state.pad.locker}" target="_blank" rel="noopener">${short(state.pad.locker)}</a></dd></dl>
+    ${grad ? `<a class="btn block" href="${EXPLORER}/tx/${grad.tx}" target="_blank" rel="noopener">Graduation tx ↗</a>` : ""}`;
+  const amt = $("#amt", box), pv = $("#pv", box), go = $("#go", box);
+  const dirs = () => side === "buy" ? { tokenIn: L.quote, tokenOut: L.token, decIn: qd, decOut: 18, outName: L.symbol } : { tokenIn: L.token, tokenOut: L.quote, decIn: 18, decOut: qd, outName: qName };
+  async function preview() {
+    const mine = ++seq, v = amt.value.trim(); last = null;
+    if (!v || !(+v > 0)) { pv.innerHTML = `<dt>You receive</dt><dd>–</dd>`; return; }
+    try {
+      const d = dirs(), amountIn = E.parseUnits(v, d.decIn);
+      const key = await C(state.pad.graduator, ABI.graduator).poolKey(L.token, L.quote);
+      const k = [key.currency0, key.currency1, key.fee, key.tickSpacing, key.hooks];
+      const zeroForOne = d.tokenIn.toLowerCase() === key.currency0.toLowerCase();
+      const [out] = await C(A.QUOTER, ABI.quoter).quoteExactInputSingle.staticCall([k, zeroForOne, amountIn, "0x"]);
+      if (mine !== seq) return;
+      last = { ...d, key, amountIn, minOut: (out * 99n) / 100n };
+      pv.innerHTML = `<dt>You receive</dt><dd>~${num(units(out, d.decOut), 6)} ${esc(d.outName)}</dd><dt>Minimum</dt><dd>${num(units(last.minOut, d.decOut), 6)} ${esc(d.outName)}</dd>`;
+    } catch (e) { if (mine === seq) pv.innerHTML = `<dt>Preview</dt><dd>${esc(e.shortMessage || "unavailable")}</dd>`; }
+  }
+  async function balances() {
+    if (!state.account) return;
+    const b = side === "buy" ? (okbQ ? await rp.getBalance(state.account) : await C(L.quote, ABI.erc20).balanceOf(state.account)) : await C(L.token, ABI.erc20).balanceOf(state.account);
+    $("#bal", box).textContent = "balance " + num(units(b, side === "buy" ? qd : 18), 4);
+    go.textContent = (side === "buy" ? "Buy " : "Sell ") + L.symbol;
+  }
+  box.querySelectorAll(".trade-tabs button").forEach((b) => b.onclick = () => {
+    side = b.dataset.s; box.querySelectorAll(".trade-tabs button").forEach((x) => x.classList.toggle("on", x === b));
+    $("#inlab", box).textContent = side === "buy" ? `You pay (${qName})` : `You sell (${L.symbol})`;
+    amt.value = ""; last = null; seq++; pv.innerHTML = `<dt>You receive</dt><dd>–</dd>`; balances();
+  });
+  amt.oninput = () => { last = null; seq++; clearTimeout(amt._t); amt._t = setTimeout(preview, 250); };
+  balances();
+  go.onclick = async () => {
+    if (!state.account) { await connect(); balances(); return; }
+    if (!last) { toast(amt.value.trim() ? "Updating the quote, try again in a moment" : "Enter an amount"); return; }
+    const o = last, native = okbQ ? (side === "buy" ? "in" : "out") : null;
+    sendTx(side === "buy" ? "Buy" : "Sell", async (s) => {
+      const payingNative = native === "in";
+      if (!payingNative) { // the router pulls ERC-20s through Permit2: token -> Permit2, then Permit2 -> router, each only if needed
+        const t = C(o.tokenIn, ABI.erc20, s), pm = C(A.PERMIT2, ABI.permit2, s), expiry = Math.floor(Date.now() / 1000) + 1800;
+        const needT = (await t.allowance(state.account, A.PERMIT2)) < o.amountIn;
+        const [allowed, exp] = await pm.allowance(state.account, o.tokenIn, A.UR);
+        const needP = allowed < o.amountIn || Number(exp) < Date.now() / 1000 + 60;
+        const total = (needT ? 1 : 0) + (needP ? 1 : 0) + 1; let n = 1;
+        if (needT) { toast(`Signature ${n++} of ${total}: allow Permit2`); await (await t.approve(A.PERMIT2, o.amountIn)).wait(); }
+        if (needP) { toast(`Signature ${n++} of ${total}: allow the router`); await (await pm.approve(o.tokenIn, A.UR, o.amountIn, expiry)).wait(); }
+        toast(`Signature ${n} of ${total}: swap`);
+      }
+      const c = encodeSwap(z, { key: o.key, tokenIn: o.tokenIn, tokenOut: o.tokenOut, amountIn: o.amountIn, minOut: o.minOut, native });
+      return C(A.UR, ABI.ur, s).execute(c.commands, c.inputs, Math.floor(Date.now() / 1000) + 1200, { value: c.value });
+    });
+  };
 }
 
 async function viewLaunchAdvanced() {

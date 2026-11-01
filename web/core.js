@@ -87,9 +87,39 @@
     return (liquidity * delta) >> 128n;
   }
 
+  // ---- Universal Router 2.1.x calldata for one swap in a Circ v4 pool (commands V4_SWAP 0x10, WRAP_ETH 0x0b, UNWRAP_WETH 0x0c;
+  // v4 actions SWAP_EXACT_IN_SINGLE 0x06, SETTLE 0x0b, SETTLE_ALL 0x0c, TAKE 0x0e, TAKE_ALL 0x0f). MSG_SENDER = address(1) and
+  // ADDRESS_THIS = address(2) are the router's recipient sentinels. amount 0 in SETTLE/TAKE means "the open delta".
+  const MSG_SENDER = "0x0000000000000000000000000000000000000001";
+  const ADDRESS_THIS = "0x0000000000000000000000000000000000000002";
+  const SWAP_PARAMS = "tuple(tuple(address,address,uint24,int24,address),bool,uint128,uint128,uint256,bytes)";
+  /** native: the quote side is WOKB and the user pays or receives native OKB (wrapped/unwrapped inside the tx). */
+  function encodeSwap(coder, { key, tokenIn, tokenOut, amountIn, minOut, native }) {
+    const k = [key.currency0, key.currency1, key.fee, key.tickSpacing, key.hooks];
+    const zeroForOne = tokenIn.toLowerCase() === key.currency0.toLowerCase();
+    const swap = coder.encode([SWAP_PARAMS], [[k, zeroForOne, amountIn, minOut, 0n, "0x"]]);
+    const enc = (types, vals) => coder.encode(types, vals);
+    const v4 = (actions, params) => coder.encode(["bytes", "bytes[]"], [actions, params]);
+    if (native === "in") { // OKB -> token: wrap into the router, settle from the router, send the token to the user
+      return { commands: "0x0b10", value: amountIn, inputs: [
+        enc(["address", "uint256"], [ADDRESS_THIS, amountIn]),
+        v4("0x060b0f", [swap, enc(["address", "uint256", "bool"], [tokenIn, 0n, false]), enc(["address", "uint256"], [tokenOut, minOut])]),
+      ] };
+    }
+    if (native === "out") { // token -> OKB: pull the token via Permit2, take WOKB into the router, unwrap to the user
+      return { commands: "0x100c", value: 0n, inputs: [
+        v4("0x060c0e", [swap, enc(["address", "uint256"], [tokenIn, amountIn]), enc(["address", "address", "uint256"], [tokenOut, ADDRESS_THIS, 0n])]),
+        enc(["address", "uint256"], [MSG_SENDER, minOut]),
+      ] };
+    }
+    return { commands: "0x10", value: 0n, inputs: [ // ERC-20 both ways (BEM launches)
+      v4("0x060c0f", [swap, enc(["address", "uint256"], [tokenIn, amountIn]), enc(["address", "uint256"], [tokenOut, minOut])]),
+    ] };
+  }
+
   /** Byte length as the contract counts it (name, symbol and imageURI limits are in bytes). */
   const byteLength = (s) => new TextEncoder().encode(s).length;
 
   return { esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
-    recommendDirect, parseContainerRevert, uncollectedFee, byteLength };
+    recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, byteLength };
 });
