@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.24;
 
 /// @notice TapeOut CircuitFactory (X Layer 0x1f09DAeFA827f02CBb40967cc91b259763760761). Only the provenance check is used.
