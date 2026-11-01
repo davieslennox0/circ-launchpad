@@ -61,9 +61,16 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   await go(p, "#/");
   check(`${label}: home loads production data`, await p.until(`${text()}.includes("Tape-out raise (WOKB)")`));
   check(`${label}: no 'fair' wording`, !/fair/i.test(await p.ev(text())));
+  console.log("INFO  " + label + ": page load " + await p.ev(`(() => { const r = performance.getEntriesByType("resource").filter((e) => /xlayer/.test(e.name)); return r.length + " RPC requests, finished at " + Math.round(Math.max(...r.map((e) => e.responseEnd))) + " ms"; })()`));
   check(`${label}: spec is read from the expected CurvePad`, (await p.ev(text())).toLowerCase().includes(PAD));
   check(`${label}: real logo loaded`, await p.until(`(() => { const i = document.querySelector(".brand img"); return i.complete && i.naturalWidth > 0; })()`, 15000));
   check(`${label}: no pink in the UI`, !(await p.ev(`getComputedStyle(document.documentElement).getPropertyValue("--hub")`)).toLowerCase().includes("ea3680"));
+  const foot = await p.ev(text("footer"));
+  check(`${label}: footer has the copyright and not the old line`, foot.includes("Syketex Technologies") && !/non-custodial|read from the chain|\(196\)/.test(foot));
+  await p.ev(`document.querySelector("a.row")?.scrollIntoView({ block: "center" })`);
+  await sleep(300);
+  await p.shot(`${label}-rows`);
+  check(`${label}: no sideways scrolling`, await p.ev(`document.documentElement.scrollWidth <= innerWidth`));
   check(`${label}: no instance switch or preview wording`, !/Preview data/i.test(await p.ev(text())) && !(await p.ev(`document.querySelector("#inst")`)) && !/\bMainnet\b/.test(await p.ev(text("header"))));
   check(`${label}: banner matches the site`, STAGING ? (await p.ev(text("#banner"))).includes("STAGING") : await p.ev(`document.querySelector("#banner").hidden`));
   check(`${label}: nothing wider than the screen`, await p.ev(`document.documentElement.scrollWidth <= innerWidth`), await p.ev(`document.documentElement.scrollWidth + " vs " + innerWidth`));
@@ -87,6 +94,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   await p.until(`document.querySelector("#name")`);
   await p.ev(`(() => { const set = (id, v) => { const e = document.querySelector(id); e.value = v; e.dispatchEvent(new Event("input", { bubbles: true })); }; set("#name", "Browser Test"); set("#sym", "BT"); document.querySelector("#next").click(); })()`);
   check(`${label}: confirm sheet warns one launch per Circuit`, await p.until(`${text()}.includes("Each Circuit can launch one token, ever. This uses it up.")`));
+  check(`${label}: no "mainnet" label on the confirm sheet`, !/mainnet/i.test(await p.ev(text())));
   await p.shot(`${label}-confirm`);
   await p.ev(`(() => { const a = document.querySelector("#ack"); a.checked = true; a.dispatchEvent(new Event("change", { bubbles: true })); document.querySelector("#go").click(); })()`);
   await p.until(`window.__tx.length > 0`, 30000);

@@ -5,11 +5,12 @@
  * signed in the user's own wallet. */
 "use strict";
 const E = ethers;
-const { esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, recommendDirect, parseContainerRevert,
+const { esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, guardBlocksLeft, recommendDirect, parseContainerRevert,
   uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength } = CircCore;
 
 const CHAIN_ID = 196;
 const RPC = "https://rpc.xlayer.tech";
+const RPCS = ["https://xlayerrpc.okx.com", RPC]; // both official public RPCs; retries move to the other one
 const EXPLORER = "https://www.oklink.com/x-layer";
 const INSTANCES = {
   prod: { pad: "0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7" },     // production v3
@@ -90,11 +91,31 @@ const ABI = {
 
 // The public RPC allows about 7 requests a second per visitor, and its 429s carry no CORS header, so a browser sees them as
 // network failures. Those are retried with a short backoff; contract reverts come back in the reply and aren't retried.
+// Public endpoints are rate limited, and a 429 reaches the browser as a CORS error. So: few requests at once,
+// a short timeout instead of ethers' five minutes, and each retry goes to the other endpoint.
+const RPC_TIMEOUT_MS = 8000, RPC_MAX_INFLIGHT = 4;
+let rpcInflight = 0;
+const rpcWaiting = [];
 class RetryProvider extends E.JsonRpcProvider {
   async _send(payload) {
-    for (let i = 0; ; i++) {
-      try { return await super._send(payload); }
-      catch (e) { if (i >= 3) throw e; await new Promise((r) => setTimeout(r, 400 * 2 ** i)); }
+    if (rpcInflight >= RPC_MAX_INFLIGHT) await new Promise((r) => rpcWaiting.push(r));
+    rpcInflight++;
+    try {
+      for (let i = 0; ; i++) {
+        try {
+          const r = await fetch(RPCS[i % RPCS.length], { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload), signal: AbortSignal.timeout(RPC_TIMEOUT_MS) });
+          if (!r.ok) throw new Error(`RPC HTTP ${r.status}`);
+          const j = await r.json();
+          return Array.isArray(j) ? j : [j];
+        } catch (e) {
+          if (i >= 3) throw new Error("The X Layer network isn't responding right now.");
+          await new Promise((r) => setTimeout(r, 300 * 2 ** i));
+        }
+      }
+    } finally {
+      rpcInflight--;
+      rpcWaiting.shift()?.();
     }
   }
 }
@@ -160,14 +181,19 @@ async function priceE18(pool, base) { // human price of `base` in the pool's oth
 async function loadPad() {
   const inst = INSTANCES[state.inst];
   const pad = C(inst.pad, ABI.pad);
-  const [wokb, bem, locker, hook, protocol, sink, registry, containerImpl, factory, guard, maxEarly, total, graduator] =
-    await Promise.all([pad.wokb(), pad.bem(), pad.locker(), pad.hook(), pad.protocol(), pad.sink(), pad.registry(),
-      pad.containerImpl(), pad.circuitFactory(), pad.GUARD_BLOCKS(), pad.MAX_EARLY_BUY(), pad.TOTAL_SUPPLY(), pad.graduator()]);
-  const [cw, cb] = await Promise.all([pad.quoteConfig(wokb), pad.quoteConfig(bem)]);
+  // One request per batch instead of twenty, so a page load doesn't run into the public RPC's rate limit.
+  const padI = new E.Interface(ABI.pad);
+  const read = async (calls) => (await multicall(calls.map(([fn, args = []]) => [inst.pad, padI, fn, args])))
+    .map((v) => (v && v.length === 1 ? v[0] : v));
+  const facts = await read([["wokb"], ["bem"], ["locker"], ["hook"], ["protocol"], ["sink"], ["registry"], ["containerImpl"],
+    ["circuitFactory"], ["GUARD_BLOCKS"], ["MAX_EARLY_BUY"], ["TOTAL_SUPPLY"], ["graduator"]]);
+  if (facts.some((v) => v === null)) throw new Error("CurvePad couldn't be read.");
+  const [wokb, bem, locker, hook, protocol, sink, registry, containerImpl, factory, guard, maxEarly, total, graduator] = facts;
+  const [cw, cb, fee, spl, nameMax, symMax] = await read([["quoteConfig", [wokb]], ["quoteConfig", [bem]], ["tradeFeeBps"], ["feeSplitBps"], ["MAX_NAME_BYTES"], ["MAX_SYMBOL_BYTES"]]);
+  if (!cw || !cb) throw new Error("CurvePad couldn't be read.");
   // tradeFeeBps() / feeSplitBps() exist from v3 on; earlier pads charge the same 1% and 50/30/20.
-  const feeBps = await pad.tradeFeeBps().catch(() => 100n);
-  const split = await pad.feeSplitBps().catch(() => [5000n, 3000n, 2000n]);
-  const maxName = Number(await pad.MAX_NAME_BYTES().catch(() => 64n)), maxSymbol = Number(await pad.MAX_SYMBOL_BYTES().catch(() => 16n));
+  const feeBps = fee ?? 100n, split = spl ?? [5000n, 3000n, 2000n];
+  const maxName = Number(nameMax ?? 64n), maxSymbol = Number(symMax ?? 16n);
   const cfg = (c, dec, sym) => {
     const vQ0 = c.vQuote0, vT0 = c.vToken0, cs = c.curveSupply, lp = c.lpTokens, tEnd = vT0 - cs;
     const qEnd = (vQ0 * vT0) / tEnd;
@@ -358,7 +384,7 @@ function setBanner() {
   const b = $("#banner");
   if (CFG.staging) {
     b.hidden = false; b.classList.add("staging");
-    b.firstElementChild.textContent = "STAGING: tiny test curves on the CIRC-TEST pad, not production. Transactions are real, on X Layer mainnet, and cost real OKB.";
+    b.firstElementChild.textContent = "STAGING: tiny test curves on the CIRC-TEST pad, not production. Transactions are real and cost real OKB.";
   } else b.hidden = true;
   $("#foot-pad").innerHTML = `CurvePad <a class="mono" href="${EXPLORER}/address/${state.pad?.addr || INSTANCES[state.inst].pad}" target="_blank" rel="noopener">${short(INSTANCES[state.inst].pad)}</a>`;
 }
@@ -488,7 +514,7 @@ async function viewToken(addr) {
   if (!L) { $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Not a Circ launch</b>${esc(addr)}</div>`; return; }
   const cfg = L.cfg, qUsd = quoteUsd(L.quote), qd = cfg.dec, sym = cfg.sym;
   const head = await rp.getBlockNumber();
-  const guardLeft = L.launchBlock + state.pad.guard - head;
+  const guardLeft = guardBlocksLeft(L.launchBlock, state.pad.guard, head);
   const trades = (INDEX?.launches?.[L.token.toLowerCase()]?.trades || L.trades || []).slice().reverse();
   const grad = INDEX?.launches?.[L.token.toLowerCase()]?.graduated;
 
@@ -505,7 +531,9 @@ async function viewToken(addr) {
       <div class="card"><div class="stats">
         <div><label>Market cap</label><b>${usd(L.mcUsd)}</b><small>${num(L.mcQuote, 3)} ${sym}</small></div>
         <div><label>Price</label><b>${L.price.toPrecision(3)}</b><small>${sym} per token${L.status === 2 ? " · v4 pool" : ""}</small></div>
-        <div><label>Raised</label><b>${num(units(L.realQuote, qd), 3)}</b><small>of ${num(units(cfg.raise, qd), 2)} ${sym}${L.status === 2 ? " (moved to LP)" : ""}</small></div>
+        <div><label>Raised</label>${L.status === 2
+          ? `<b>${Number(units(cfg.raise, qd).toPrecision(3))} ${sym}</b><small>raised, moved to the Uniswap pool</small>`
+          : `<b>${num(units(L.realQuote, qd), 3)}</b><small>of ${num(units(cfg.raise, qd), 2)} ${sym}</small>`}</div>
         <div><label>Curve sold</label><b>${L.status ? "100" : L.progress.toFixed(2)}%</b><small>${num(units(L.tokensLeft, 18), 2)} left</small></div>
       </div></div>
       <div class="card"><h3>Bonding curve <small>x·y=k, virtual reserves read from CurvePad</small></h3>${curveSvg(L)}</div>
@@ -544,7 +572,7 @@ function renderTrade(box, L, guardLeft) {
     <div class="field"><label><span id="inlab">You pay</span><span id="bal"></span></label><input id="amt" inputmode="decimal" placeholder="0.0"></div>
     <div class="quick" id="quick"></div>
     <dl class="kv" id="pv"><dt>You receive</dt><dd>–</dd></dl>
-    ${guardLeft > 0 ? `<div class="note warn">Anti-snipe guard: ${guardLeft} more blocks. Buys are capped at ${num(units(state.pad.maxEarly, 18), 1)} tokens per block across all buyers.</div>` : ""}
+    ${guardLeft > 0 ? `<div class="note warn" id="guard-note"></div>` : ""}
     <button class="btn hub block" id="go">Connect wallet</button>
     <div class="note">${Number(state.pad.feeBps) / 100}% fee on every trade: ${state.pad.split[0] / 100}% to this launch's Container, ${state.pad.split[1] / 100}% protocol, ${state.pad.split[2] / 100}% sink. Slippage limit 1%.</div>`;
   const amt = $("#amt", box), pv = $("#pv", box), go = $("#go", box);
@@ -562,13 +590,13 @@ function renderTrade(box, L, guardLeft) {
         const q = E.parseUnits(v, qd);
         const pad = state.pad.contract;
         const [c, head, early] = await Promise.all([pad.curves(L.token), rp.getBlockNumber(), pad.earlyBlock(L.token)]);
-        const guarded = head + 1 < Number(c.launchBlock) + state.pad.guard;
+        const guarded = guardBlocksLeft(Number(c.launchBlock), state.pad.guard, head) > 0;
         const r = previewCurveBuy({ vQuote: c.vQuote, vToken: c.vToken, tokensLeft: c.tokensLeft, quoteIn: q, feeBps: state.pad.feeBps,
           guarded, maxEarly: state.pad.maxEarly, soldThisBlock: Number(early.blockNumber) >= head ? early.sold : 0n });
         if (mine !== seq) return;
         if (r.out === 0n) { pv.innerHTML = `<dt>Preview</dt><dd>${guarded ? "this block's cap is used up, try again" : "amount too small"}</dd>`; return; }
         // While guarded we send the full amount: the contract applies the cap at the block it lands in and refunds the rest.
-        last = { q: guarded ? q : r.used, min: r.minOut };
+        last = { q: guarded ? q : r.used, min: r.minOut, guarded };
         pv.innerHTML = `<dt>You receive</dt><dd>${r.capped ? "up to " : ""}${num(units(r.out, 18), 2)} ${esc(L.symbol)}</dd>
           ${r.used < q ? `<dt>${r.capped ? "Used (block cap)" : "Used (curve fills)"}</dt><dd>${num(units(r.used, qd), 6)} ${sym}</dd>
           <dt>Refunded</dt><dd>${num(units(q - r.used, qd), 6)} ${sym}</dd>` : ""}
@@ -605,9 +633,26 @@ function renderTrade(box, L, guardLeft) {
   amt.oninput = () => { last = null; seq++; clearTimeout(amt._t); amt._t = setTimeout(preview, 250); };
   $("#inlab", box).textContent = `You pay (${wokbQ ? "OKB" : "BEM"})`;
   quick(); balances();
+  // The guard is judged by the block a buy lands in, so the countdown and the quote have to stay live.
+  const guardNote = $("#guard-note", box);
+  const showGuard = (left) => { guardNote.textContent = `Anti-snipe guard: ${left} more block${left === 1 ? "" : "s"}. Buys are capped at ${num(units(state.pad.maxEarly, 18), 1)} tokens per block across all buyers, and the rest is refunded. The guard may end before your transaction lands: the cap then no longer applies, and your full amount is spent at the live price.`; };
+  const guardEnded = () => { guardNote?.remove(); if (amt.value.trim()) { last = null; seq++; preview(); } };
+  if (guardNote) {
+    showGuard(guardLeft);
+    const tick = setInterval(async () => {
+      if (!guardNote.isConnected) return clearInterval(tick);
+      try {
+        const left = guardBlocksLeft(L.launchBlock, state.pad.guard, await rp.getBlockNumber());
+        if (left > 0) showGuard(left); else { clearInterval(tick); guardEnded(); }
+      } catch {} // the next tick tries again
+    }, 3000);
+  }
   go.onclick = async () => {
     if (!state.account) { await connect(); balances(); return; }
     if (!last) { toast(amt.value.trim() ? "Updating the quote, try again in a moment" : "Enter an amount"); return; }
+    if (side === "buy" && last.guarded && guardBlocksLeft(L.launchBlock, state.pad.guard, await rp.getBlockNumber()) <= 0) {
+      guardEnded(); toast("The anti-snipe guard just ended, so the quote changed. Check it and press Buy again.", 6000); return;
+    }
     const order = last; // fixed for this click, whatever the input does while the wallet is open
     const deadline = Math.floor(Date.now() / 1000) + 1200;
     if (side === "buy") {
@@ -825,7 +870,7 @@ async function viewLaunchAdvanced() {
       <div class="field"><label>Quote asset</label><select id="quote">
         <option value="${p.wokb}">OKB / WOKB (default)</option><option value="${p.bem}">BEM · volatile quote</option></select></div>
       <div id="vol" class="note vol" hidden>BEM is a volatile quote: the tape-out target is fixed in BEM (${num(units(b.c.raise, 8), 2)} BEM, ≈ ${usd(units(b.c.raise, 8) * b.u)} today), so the USD market caps move with BEM's price.</div>
-      <div class="field"><label>Dev-buy (optional, exempt from anti-snipe)</label><input id="dev" inputmode="decimal" placeholder="0.0"></div>
+      <div class="field"><label>Dev-buy (optional)</label><input id="dev" inputmode="decimal" placeholder="0.0"></div>
       <button class="btn hub block" id="launch">Connect wallet</button>
     </div></div>
     <div class="card"><h3>What you get <small>from CurvePad</small></h3><dl class="kv" id="spec"></dl>
@@ -1006,8 +1051,6 @@ async function stepDetails() {
         <button class="qopt" data-q="${p.bem}"><b>BEM</b><small class="mono" style="color:var(--blue-ink)">volatile quote</small></button></div></div>
       <div id="vol" class="note vol" hidden>BEM is a volatile quote: the tape-out target is fixed at ${num(units(b.raise, 8), 2)} BEM (≈ ${usd(units(b.raise, 8) * state.prices.bemUsd)} today), so market caps in USD move with BEM.</div>
       <div class="field"><label><span>Dev buy (optional)</span><span id="devu"></span></label><input id="dev" inputmode="decimal" placeholder="0.0" value="${esc(flow.dev)}"></div>
-      <div class="note">The dev buy is exempt from the anti-snipe cap and happens in the launch transaction.</div>
-      <div class="note">The logo is pinned to IPFS and its ipfs:// link is written into your launch transaction. No logo? An initials avatar is used.</div>
     </div>
     <div class="pinned"><button class="btn hub block" id="next">Review</button><button class="btn ghost block" id="back" style="margin-top:8px">Back</button></div></div>`;
   const prev = $("#prev");
@@ -1075,7 +1118,7 @@ async function stepConfirm() {
   const L = { token: "0x" + "0".repeat(40), symbol: flow.sym, imageURI: flow.imageURI };
   $("#app").innerHTML = `<div class="flow">${stepsBar()}<h2>Confirm launch</h2>
     <div class="sheet">
-      <div class="warnline"><span class="pill complete">X Layer mainnet</span><span class="pill" style="color:var(--red);border-color:rgba(194,99,90,.45)">Irreversible</span>${bem ? '<span class="pill vol">BEM · volatile quote</span>' : ""}</div>
+      <div class="warnline"><span class="pill" style="color:var(--red);border-color:rgba(194,99,90,.45)">Irreversible</span>${bem ? '<span class="pill vol">BEM · volatile quote</span>' : ""}</div>
       <div class="tp-head" style="padding:0 0 6px;gap:14px">${flow.img ? `<div class="av" style="background:var(--panel-2)"><img src="${esc(flow.img)}" alt=""></div>` : avatar(L)}
         <div><div style="font-size:20px;color:var(--ink);font-weight:600">${esc(flow.name)} <span class="muted">$${esc(flow.sym)}</span></div>
         <div class="muted mono" style="font-size:12.5px">${minting ? "wired to the next Nand (minted first)" : "wired to Nand #" + flow.sel.id}</div></div></div>
@@ -1093,7 +1136,7 @@ async function stepConfirm() {
       </dl>
       <div class="run" id="run">${sigs.map((g, k) => `<div class="sig" data-k="${g.id}"><span class="dotk">${k + 1}</span><span>Signature ${k + 1} of ${sigs.length}: ${esc(g.t)}</span><span class="st mono"></span></div>`).join("")}
         <div class="bar" style="margin-top:10px"><div id="runbar" style="width:0%"></div></div></div>
-      <label class="check"><input type="checkbox" id="ack"><span>I understand this launches on X Layer mainnet, can't be undone, and uses up this Circuit's one launch.</span></label>
+      <label class="check"><input type="checkbox" id="ack"><span>I understand this can't be undone and uses up this Circuit's one launch.</span></label>
       <button class="btn hub block" id="go" disabled>${minting ? `Mint Nand & launch ${esc(flow.sym)}` : `Launch ${esc(flow.sym)}`}</button>
       <button class="btn ghost block" id="back" style="margin-top:8px">Back</button>
       <div id="runlog" class="mono muted" style="font-size:12px;margin-top:10px"></div>
@@ -1199,11 +1242,14 @@ async function loadHideList() { // moderation: token addresses whose logo is rep
 async function boot() {
   setBanner();
   await loadHideList(); // before any logo renders, or a hidden logo could flash
-  $("#app").innerHTML = `<div style="padding:80px 0" class="muted mono">Reading CurvePad on X Layer…</div>`;
-  await loadPad();
-  await loadPrices();
-  await loadLaunches();
-  booted = true;
+  $("#app").innerHTML = `<div style="padding:80px 0" class="muted mono" id="loading">Loading…</div>`;
+  const slow = setTimeout(() => { const l = $("#loading"); if (l) l.textContent = "Still loading. The X Layer network is responding slowly."; }, 5000);
+  try {
+    await loadPad();
+    await loadPrices();
+    await loadLaunches();
+    booted = true;
+  } finally { clearTimeout(slow); }
 }
 async function route() {
   try {

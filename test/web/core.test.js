@@ -67,6 +67,13 @@ test("curve math matches the contract's rounding", () => {
   assert.ok(C.tokensOut(V_Q0, V_T0, net) >= out);
 });
 
+test("guard: blocks left match the contract's block.number < launchBlock + GUARD_BLOCKS", () => {
+  assert.equal(C.guardBlocksLeft(100, 30, 100), 29);
+  assert.equal(C.guardBlocksLeft(100, 30, 128), 1);  // lands in 129: still guarded
+  assert.equal(C.guardBlocksLeft(100, 30, 129), 0);  // lands in 130: not guarded
+  assert.equal(C.guardBlocksLeft(100, 30, 500), 0);
+});
+
 test("logos: only ipfs:// with a valid CID renders", () => {
   const hide = new Set();
   assert.equal(C.safeImage(`ipfs://${CID}`, null, hide), CID);

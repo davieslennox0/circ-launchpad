@@ -581,6 +581,18 @@ contract CurvePadUnitTest is UnitBase {
         assertEq(t.balanceOf(alice), pad.MAX_EARLY_BUY(), "dev-buy didn't use up the launch block's allowance");
     }
 
+    function test_antiSnipe_creatorPostLaunchBuyIsCapped() public {
+        // Only the dev-buy inside createLaunch is exempt. The creator's later buys share the block cap.
+        vm.prank(creator);
+        LaunchToken t = LaunchToken(pad.createLaunch(address(nft), 1, "A", "A", "", address(wokb), 0, 0));
+        deal(address(wokb), creator, 50 ether);
+        vm.startPrank(creator);
+        wokb.approve(address(pad), type(uint256).max);
+        pad.buy(address(t), 50 ether, 0, block.timestamp);
+        vm.stopPrank();
+        assertEq(t.balanceOf(creator), pad.MAX_EARLY_BUY(), "creator capped after launch");
+    }
+
     function test_antiSnipe_liftsAfterGuard() public {
         LaunchToken t = _launch(address(wokb));
         _skipGuard();

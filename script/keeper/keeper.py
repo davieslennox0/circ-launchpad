@@ -10,7 +10,7 @@ Reads use plain JSON-RPC (stdlib only, ~15 MB RSS). Only sends go through `cast`
   CIRC_PAD             CurvePad address
   START_BLOCK          first block to scan (the pad's deploy block)
   RPC_URL              primary RPC; may hold an access token, so it is never logged or put on a command line
-  RPC_FALLBACK_URL     used when the primary fails or refuses old blocks (default https://rpc.xlayer.tech)
+  RPC_FALLBACK_URL     comma-separated, used when the primary fails or refuses old blocks (default: both official public RPCs)
   STATE_FILE           default /var/lib/circ-keeper/state.json
   POLL_SECONDS         default 5
   MIN_BALANCE_WEI      warn below this keeper balance (default 0.002 OKB)
@@ -22,9 +22,9 @@ import sys
 import time
 import urllib.request
 
-PUBLIC_RPC = "https://rpc.xlayer.tech"
-RPC = os.environ.get("RPC_URL", PUBLIC_RPC)
-RPCS = list(dict.fromkeys([RPC, os.environ.get("RPC_FALLBACK_URL", PUBLIC_RPC)]))
+PUBLIC_RPCS = "https://xlayerrpc.okx.com,https://rpc.xlayer.tech"
+RPC = os.environ.get("RPC_URL", PUBLIC_RPCS.split(",")[0])
+RPCS = list(dict.fromkeys([RPC, *os.environ.get("RPC_FALLBACK_URL", PUBLIC_RPCS).split(",")]))
 PAD = os.environ.get("CIRC_PAD", "").lower()
 STATE_FILE = os.environ.get("STATE_FILE", "/var/lib/circ-keeper/state.json")
 POLL = int(os.environ.get("POLL_SECONDS", "5"))

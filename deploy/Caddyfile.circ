@@ -15,7 +15,7 @@ circ.getsarf.xyz {
 		X-Frame-Options DENY
 		Referrer-Policy strict-origin-when-cross-origin
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://api.fontshare.com https://fonts.googleapis.com; font-src 'self' https://cdn.fontshare.com https://fonts.gstatic.com; img-src 'self' data: blob: https://ipfs.filebase.io https://dweb.link https://*.ipfs.dweb.link; connect-src 'self' https://rpc.xlayer.tech https://circ-launchpad-pin.vercel.app; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://api.fontshare.com https://fonts.googleapis.com; font-src 'self' https://cdn.fontshare.com https://fonts.gstatic.com; img-src 'self' data: blob: https://ipfs.filebase.io https://dweb.link https://*.ipfs.dweb.link; connect-src 'self' https://rpc.xlayer.tech https://xlayerrpc.okx.com https://circ-launchpad-pin.vercel.app; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 	}
 	# Staging copy of the site, on the CIRC-TEST pad (deploy/publish-web.sh staging)
 	handle_path /staging/* {

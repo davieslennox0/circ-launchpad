@@ -34,7 +34,7 @@ Verification:
 Live test: the same code passed 62/62 on the CIRC-TEST instance (`docs/E2E_RESULTS-v3.md`).
 
 Services on the server (dedicated `circ` user, code in `/opt/circ`, not the git checkout):
-- `circ-keeper`: keeper `0x2b41B054C8Ae9fE81Fc64928377e315c2DE6856A`, private RPC (token only in `/etc/circ/keeper.env`) with the public RPC as fallback, encrypted
+- `circ-keeper`: keeper `0x2b41B054C8Ae9fE81Fc64928377e315c2DE6856A`, private RPC (token only in `/etc/circ/keeper.env`) with both official public RPCs as fallback, encrypted
   keystore in `/etc/circ`, log
   `/var/log/circ-keeper.log`, state `/var/lib/circ-keeper`.
 - `circ-indexer`: holds no wallet key, same private RPC and fallback (`/etc/circ/indexer.env`), writes `/srv/circ-web/data`, log
@@ -42,7 +42,7 @@ Services on the server (dedicated `circ` user, code in `/opt/circ`, not the git 
 - Site: https://circ.getsarf.xyz from `/srv/circ-web` (Caddy block in `deploy/Caddyfile.circ`).
 - Logo pinning: https://circ-launchpad-pin.vercel.app/api/pin (`pin/`, Vercel project root `pin`).
 - Staging: https://circ.getsarf.xyz/staging/ from `/srv/circ-staging`, on the CIRC-TEST pad with launching allowed. Transactions there
-  are real and cost real OKB. No keeper watches it, so "Tape out now" is manual. Publish with `deploy/publish-web.sh staging|prod`.
+  are real and cost real OKB. `circ-keeper-test` graduates it, with its own wallet, state and log (`/var/log/circ-keeper-test.log`). Publish with `deploy/publish-web.sh staging|prod`.
 
 To update code: copy `script/keeper/keeper.py` and `web/indexer.py` to `/opt/circ`, and publish `web/` with `deploy/publish-web.sh`.
 Before each frontend release run `node test/web/browser.mjs <url> <shots dir> [staging]`.
