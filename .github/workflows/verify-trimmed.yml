@@ -2,8 +2,11 @@ name: OKLink input check
 
 on:
   workflow_dispatch:
-  push:
-    branches: [chore/oklink-trimmed-input]
+    inputs:
+      candidate:
+        description: Extra standard-JSON input to test (repo path), optional
+        required: false
+        default: ""
 
 jobs:
   compare:
@@ -17,6 +20,6 @@ jobs:
           ./solc --version | tail -1
       - name: Full input (control, Sourcify exact match)
         run: python3 script/ci/compare_runtime.py ./solc docs/verification/CurvePad-v2.standard-input.json 0x071a1ff737415Ddc2085629D80B7C68741e17A18 https://rpc.xlayer.tech
-      - name: Trimmed input (CurvePad import closure only)
-        if: always()
-        run: python3 script/ci/compare_runtime.py ./solc docs/verification/CurvePad-v2.trimmed-input.json 0x071a1ff737415Ddc2085629D80B7C68741e17A18 https://rpc.xlayer.tech
+      - name: Candidate input (optional)
+        if: ${{ inputs.candidate != '' }}
+        run: python3 script/ci/compare_runtime.py ./solc "${{ inputs.candidate }}" 0x071a1ff737415Ddc2085629D80B7C68741e17A18 https://rpc.xlayer.tech
