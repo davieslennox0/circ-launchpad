@@ -5,7 +5,7 @@
  * signed in the user's own wallet. */
 "use strict";
 const E = ethers;
-const { lastTradeTs, heat, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, guardBlocksLeft, recommendDirect, parseContainerRevert,
+const { amountFromBalance, lastTradeTs, heat, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, guardBlocksLeft, recommendDirect, parseContainerRevert,
   uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength } = CircCore;
 
 const CHAIN_ID = 196;
@@ -807,12 +807,24 @@ async function viewToken(addr) {
   renderCreator($("#creator"), L);
 }
 
+// 25% / 50% / Max, shared by the curve and Uniswap panels.
+const GAS_RESERVE_WEI = 200000000000000n; // 0.0002 OKB: many times a buy's gas at X Layer's prices
+const PCT_BUTTONS = `<div class="quick pct"><button data-p="25">25%</button><button data-p="50">50%</button><button data-p="100">Max</button></div>`;
+function applyPercent(box, percent, decimals, reserve, amt, refresh) {
+  if (!state.account) return toast("Connect your wallet first");
+  if (box._bal === null || box._bal === undefined) return toast("Reading your balance, try again in a moment");
+  const v = amountFromBalance(box._bal, percent, reserve);
+  if (v === 0n) return toast(reserve ? "Not enough OKB after keeping a little for gas" : "Nothing to sell");
+  amt.value = E.formatUnits(v, decimals);
+  refresh();
+}
+
 function renderTrade(box, L, guardLeft) {
   const cfg = L.cfg, sym = cfg.sym, qd = cfg.dec, wokbQ = !isBem(L.quote);
   let side = "buy";
   box.innerHTML = `<div class="trade-tabs"><button class="buy on" data-s="buy">Buy</button><button class="sell" data-s="sell">Sell</button></div>
     <div class="field"><label><span id="inlab">You pay</span><span id="bal"></span></label><input id="amt" inputmode="decimal" placeholder="0.0"></div>
-    <div class="quick" id="quick"></div>
+    <div class="quick" id="quick"></div>${PCT_BUTTONS}
     <dl class="kv" id="pv"><dt>You receive</dt><dd>–</dd></dl>
     ${guardLeft > 0 ? `<div class="note warn" id="guard-note"></div>` : ""}
     <button class="btn hub block" id="go">Connect wallet</button>
@@ -820,7 +832,7 @@ function renderTrade(box, L, guardLeft) {
   const amt = $("#amt", box), pv = $("#pv", box), go = $("#go", box);
   const quick = () => $("#quick", box).innerHTML = (side === "buy"
     ? (wokbQ ? ["0.01", "0.1", "0.5", "1"] : ["1", "5", "10", "25"]).map((v) => `<button data-v="${v}">${v} ${wokbQ ? "OKB" : "BEM"}</button>`)
-    : ["25", "50", "100"].map((v) => `<button data-p="${v}">${v}%</button>`)).join("");
+    : []).join("");
   // `last` is what the button will send. It is cleared on every keystroke, and a slow preview for an older amount is
   // discarded (seq), so the button can never send anything but the amount on screen.
   let last = null, seq = 0;
@@ -855,22 +867,27 @@ function renderTrade(box, L, guardLeft) {
   async function balances() {
     if (!state.account) { go.textContent = "Connect wallet"; return; }
     go.textContent = side === "buy" ? `Buy ${L.symbol}` : `Sell ${L.symbol}`;
+    const asked = side;
     const b = side === "buy"
       ? (wokbQ ? await rp.getBalance(state.account) : await C(L.quote, ABI.erc20).balanceOf(state.account))
       : await C(L.token, ABI.erc20).balanceOf(state.account);
+    if (asked !== side) return; // the tab changed while this was reading
     box._bal = b;
     $("#bal", box).textContent = "balance " + num(units(b, side === "buy" ? qd : 18), 4);
   }
   box.querySelectorAll(".trade-tabs button").forEach((b) => b.onclick = () => {
     side = b.dataset.s; box.querySelectorAll(".trade-tabs button").forEach((x) => x.classList.toggle("on", x === b));
     $("#inlab", box).textContent = side === "buy" ? `You pay (${wokbQ ? "OKB" : "BEM"})` : `You sell (${L.symbol})`;
-    amt.value = ""; quick(); preview(); balances();
+    amt.value = ""; box._bal = null; quick(); preview(); balances();
   });
   $("#quick", box).onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
-    if (b.dataset.v) amt.value = b.dataset.v;
-    else if (box._bal) amt.value = E.formatUnits((box._bal * BigInt(b.dataset.p)) / 100n, 18);
+    amt.value = b.dataset.v;
     preview();
+  };
+  $(".quick.pct", box).onclick = (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    applyPercent(box, b.dataset.p, side === "buy" ? qd : 18, side === "buy" && wokbQ ? GAS_RESERVE_WEI : 0n, amt, () => { last = null; seq++; clearTimeout(amt._t); preview(); });
   };
   amt.oninput = () => { last = null; seq++; clearTimeout(amt._t); amt._t = setTimeout(preview, 250); };
   $("#inlab", box).textContent = `You pay (${wokbQ ? "OKB" : "BEM"})`;
@@ -1025,7 +1042,7 @@ function renderPoolTrade(box, L, grad) {
   let side = "buy", last = null, seq = 0;
   box.innerHTML = `<h3>Trade <small>Uniswap v4 pool · taped out</small></h3>
     <div class="trade-tabs"><button class="buy on" data-s="buy">Buy</button><button class="sell" data-s="sell">Sell</button></div>
-    <div class="field"><label><span id="inlab">You pay (${qName})</span><span id="bal"></span></label><input id="amt" inputmode="decimal" placeholder="0.0"></div>
+    <div class="field"><label><span id="inlab">You pay (${qName})</span><span id="bal"></span></label><input id="amt" inputmode="decimal" placeholder="0.0"></div>${PCT_BUTTONS}
     <dl class="kv" id="pv"><dt>You receive</dt><dd>–</dd></dl>
     <button class="btn hub block" id="go">${state.account ? "Buy " + esc(L.symbol) : "Connect wallet"}</button>
     <div class="note">Swaps go through Uniswap's Universal Router into this launch's locked-liquidity pool. Slippage limit 1%.</div>
@@ -1051,15 +1068,22 @@ function renderPoolTrade(box, L, grad) {
   }
   async function balances() {
     if (!state.account) return;
+    const asked = side;
     const b = side === "buy" ? (okbQ ? await rp.getBalance(state.account) : await C(L.quote, ABI.erc20).balanceOf(state.account)) : await C(L.token, ABI.erc20).balanceOf(state.account);
+    if (asked !== side) return; // the tab changed while this was reading
+    box._bal = b;
     $("#bal", box).textContent = "balance " + num(units(b, side === "buy" ? qd : 18), 4);
     go.textContent = (side === "buy" ? "Buy " : "Sell ") + L.symbol;
   }
   box.querySelectorAll(".trade-tabs button").forEach((b) => b.onclick = () => {
     side = b.dataset.s; box.querySelectorAll(".trade-tabs button").forEach((x) => x.classList.toggle("on", x === b));
     $("#inlab", box).textContent = side === "buy" ? `You pay (${qName})` : `You sell (${L.symbol})`;
-    amt.value = ""; last = null; seq++; pv.innerHTML = `<dt>You receive</dt><dd>–</dd>`; balances();
+    amt.value = ""; last = null; seq++; box._bal = null; pv.innerHTML = `<dt>You receive</dt><dd>–</dd>`; balances();
   });
+  $(".quick.pct", box).onclick = (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    applyPercent(box, b.dataset.p, side === "buy" ? qd : 18, side === "buy" && okbQ ? GAS_RESERVE_WEI : 0n, amt, () => { last = null; seq++; clearTimeout(amt._t); preview(); });
+  };
   amt.oninput = () => { last = null; seq++; clearTimeout(amt._t); amt._t = setTimeout(preview, 250); };
   balances();
   go.onclick = async () => {

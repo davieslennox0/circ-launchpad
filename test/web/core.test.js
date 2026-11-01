@@ -150,6 +150,15 @@ test("activity: last trade, heating up, and the latest trades", () => {
   assert.equal(C.recentActivity([], 5).length, 0);
 });
 
+test("quick buttons: percent of balance, keeping gas back when paying in OKB", () => {
+  assert.equal(C.amountFromBalance(1000n, 25), 250n);
+  assert.equal(C.amountFromBalance(1000n, 100), 1000n);         // Max sell: everything
+  assert.equal(C.amountFromBalance(1000n, 100, 100n), 900n);    // Max buy: gas stays behind
+  assert.equal(C.amountFromBalance(1000n, 50, 100n), 450n);
+  assert.equal(C.amountFromBalance(50n, 100, 100n), 0n);        // less than the gas reserve
+  assert.equal(C.amountFromBalance(0n, 100), 0n);
+});
+
 test("floor: sorting keeps rows without a value last", () => {
   const rows = [{ v: 1 }, { v: null }, { v: 3 }];
   assert.deepEqual(C.sortBy(rows, (r) => r.v, true).map((r) => r.v), [3, 1, null]);

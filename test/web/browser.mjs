@@ -204,6 +204,24 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     await sleep(300);
     check(`${label}: trade button gets out of the way of the panel`, await p.ev(`getComputedStyle(document.querySelector(".trade-dock")).display`) === "none");
   }
+  check(`${label}: trade panel has 25%, 50% and Max`, (await p.ev(`[...document.querySelectorAll("#tradebox .quick.pct button")].map((b) => b.innerText).join()`)) === "25%,50%,Max");
+  await p.until(`/balance \\d/.test(document.querySelector("#tradebox #bal")?.innerText || "")`, 15000);
+  const balOkb = Number((await p.ev(`document.querySelector("#tradebox #bal").innerText`)).replace(/[^0-9.]/g, ""));
+  await p.ev(`document.querySelector('#tradebox .quick.pct [data-p="100"]').click()`);
+  const maxBuy = Number(await p.ev(`document.querySelector("#tradebox #amt").value`));
+  check(`${label}: Max buy keeps gas back`, maxBuy > 0 && Math.abs(balOkb - 0.0002 - maxBuy) < 0.0001, `balance ${balOkb}, Max ${maxBuy}`);
+  await p.ev(`document.querySelector('#tradebox .quick.pct [data-p="50"]').click()`);
+  const halfBuy = Number(await p.ev(`document.querySelector("#tradebox #amt").value`));
+  check(`${label}: 50% is half of Max`, Math.abs(halfBuy - maxBuy / 2) < 0.00001, String(halfBuy));
+  await p.until(`/You receive/.test(document.querySelector("#tradebox #pv")?.innerText || "")`, 15000);
+  await p.ev(`document.querySelector('#tradebox .trade-tabs .sell').click()`);
+  await p.until(`/balance \\d/.test(document.querySelector("#tradebox #bal")?.innerText || "")`, 15000);
+  await sleep(1500);
+  const sellBal = Number((await p.ev(`document.querySelector("#tradebox #bal").innerText`)).replace(/[^0-9.]/g, ""));
+  await p.ev(`document.querySelector('#tradebox .quick.pct [data-p="100"]').click()`);
+  const maxSell = await p.ev(`document.querySelector("#tradebox #amt").value`);
+  check(`${label}: Max sell uses the token balance`, sellBal > 0 ? Number(maxSell) > 0 : maxSell === "", `balance ${sellBal}, Max ${maxSell || "none"}`);
+  await p.ev(`document.querySelector('#tradebox .trade-tabs .buy').click()`);
   await p.ev(`document.querySelector('[data-frame="5M"]').click()`);
   await sleep(100);
   check(`${label}: chart window switches`, (await p.ev(text("#price-chart"))).includes("in 5M"));

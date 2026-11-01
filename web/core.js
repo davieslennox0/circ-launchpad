@@ -224,6 +224,12 @@
       .sort((a, b) => b.ts - a.ts).slice(0, limit);
   }
 
-  return { lastTradeTs, heat, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
+  // Amount for a 25% / 50% / Max button. `reserve` stays in the wallet for gas when paying with native OKB.
+  function amountFromBalance(balance, percent, reserve = 0n) {
+    const spendable = balance > reserve ? balance - reserve : 0n;
+    return (spendable * BigInt(percent)) / 100n;
+  }
+
+  return { amountFromBalance, lastTradeTs, heat, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
     recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength };
 });
