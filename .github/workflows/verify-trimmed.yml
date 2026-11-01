@@ -1,0 +1,25 @@
+name: OKLink input check
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Extra standard-JSON input to test (repo path), optional
+        required: false
+        default: ""
+
+jobs:
+  compare:
+    name: Recompile CurvePad v2 inputs vs deployed bytecode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: solc 0.8.24 (static)
+        run: |
+          curl -sL -o solc https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux && chmod +x solc
+          ./solc --version | tail -1
+      - name: Full input (control, Sourcify exact match)
+        run: python3 script/ci/compare_runtime.py ./solc docs/verification/CurvePad-v2.standard-input.json 0x071a1ff737415Ddc2085629D80B7C68741e17A18 https://rpc.xlayer.tech
+      - name: Candidate input (optional)
+        if: ${{ inputs.candidate != '' }}
+        run: python3 script/ci/compare_runtime.py ./solc "${{ inputs.candidate }}" 0x071a1ff737415Ddc2085629D80B7C68741e17A18 https://rpc.xlayer.tech
