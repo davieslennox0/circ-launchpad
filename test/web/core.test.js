@@ -123,3 +123,23 @@ test("uncollected v4 fees handle growth wrapping", () => {
   const wrapped = C.uncollectedFee(1n, 3n * Q, (1n << 256n) - 2n * Q); // growth wrapped past 2^256
   assert.equal(wrapped, 5n);
 });
+
+test("Dev holds: percent of supply, highlighted only above 10%", () => {
+  const S = 10n ** 27n;
+  assert.deepEqual(core.devHolding(S / 10n, S), { pct: 10, high: false });
+  assert.deepEqual(core.devHolding(S / 10n + 10n ** 24n, S), { pct: 10.1, high: true });
+  assert.deepEqual(core.devHolding(0n, S), { pct: 0, high: false });
+  assert.equal(core.devHolding(null, S), null);
+  assert.equal(core.devHolding(1n, null), null);
+});
+
+test("OKX Wallet link wraps the page twice-encoded, per OKX's universal link format", () => {
+  const u = "https://circ.getsarf.xyz/#/launch";
+  const link = core.okxWalletLink(u);
+  assert.ok(link.startsWith("https://web3.okx.com/download?deeplink="));
+  const inner = decodeURIComponent(link.split("deeplink=")[1]);
+  assert.ok(inner.startsWith("okx://wallet/dapp/url?dappUrl="));
+  assert.equal(decodeURIComponent(inner.split("dappUrl=")[1]), u);
+  assert.equal(core.isMobile("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)"), true);
+  assert.equal(core.isMobile("Mozilla/5.0 (X11; Linux x86_64) Chrome/120"), false);
+});

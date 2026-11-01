@@ -26,7 +26,7 @@ interface INandoutTransistors {
     function balanceOf(address, uint256) external view returns (uint256);
 }
 
-/// @notice The pitchook.xyz "Pick a Nand" flow on a mainnet fork, against a freshly deployed CurvePad: a brand-new Nand
+/// @notice The site's "Pick a Nand" flow on a mainnet fork, against a freshly deployed CurvePad: a brand-new Nand
 /// (mint 1 NAND transistor + tape out a 1-gate netlist, as an external site would) passes createLaunch and trades, and
 /// a Circuit can be launched exactly once, by anyone, ever (isLaunched / AlreadyLaunched).
 contract NandoutMintForkTest is ForkBase {

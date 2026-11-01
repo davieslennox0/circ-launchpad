@@ -19,10 +19,10 @@ POLL = int(os.environ.get("POLL_SECONDS", "4"))
 CHUNK = 100
 KEEP_TRADES = 150
 
-# v2 = CurvePad with imageURI in LaunchCreated (SPEC A9); v1 = original ABI (CIRC-TEST only).
+# abi 2 = LaunchCreated with imageURI (SPEC A9). prod is production v3; test is the v3 CIRC-TEST instance.
 INSTANCES = {
-    "prod": {"pad": "0x071a1ff737415Ddc2085629D80B7C68741e17A18", "start": 74725398, "abi": 2},
-    "test": {"pad": "0xa66D7020a374BCC3e6424B9075E481617C669057", "start": 74714250, "abi": 1},
+    "prod": {"pad": "0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7", "start": 74785331, "abi": 2},
+    "test": {"pad": "0x8f2bbd9dA778071a8B6E9C2D3fEC3f3a6850E6BA", "start": 74783260, "abi": 2},
 }
 
 # keccak256 of the CurvePad event signatures (cast keccak; see src/CurvePad.sol)

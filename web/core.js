@@ -117,9 +117,23 @@
     ] };
   }
 
+  /** Share of supply in the launching wallet, for the "Dev holds X%" label. Above 10% it is highlighted. It reads that one
+   *  wallet only: tokens moved to another wallet no longer count. null when the creator isn't known. */
+  function devHolding(balance, totalSupply) {
+    if (balance == null || !totalSupply) return null;
+    const bps = Number((BigInt(balance) * 10000n) / BigInt(totalSupply));
+    return { pct: bps / 100, high: bps > 1000 };
+  }
+
+  /** Opens a site inside OKX Wallet's dApp browser (web3.okx.com docs: app universal link). */
+  function okxWalletLink(url) {
+    return "https://web3.okx.com/download?deeplink=" + encodeURIComponent("okx://wallet/dapp/url?dappUrl=" + encodeURIComponent(url));
+  }
+  const isMobile = (ua) => /Android|iPhone|iPad|iPod|Mobile/i.test(ua || "");
+
   /** Byte length as the contract counts it (name, symbol and imageURI limits are in bytes). */
   const byteLength = (s) => new TextEncoder().encode(s).length;
 
   return { esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
-    recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, byteLength };
+    recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength };
 });

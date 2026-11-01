@@ -6,14 +6,14 @@
 "use strict";
 const E = ethers;
 const { esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, recommendDirect, parseContainerRevert,
-  uncollectedFee, encodeSwap, byteLength } = CircCore;
+  uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength } = CircCore;
 
 const CHAIN_ID = 196;
 const RPC = "https://rpc.xlayer.tech";
 const EXPLORER = "https://www.oklink.com/x-layer";
 const INSTANCES = {
-  prod: { pad: "0x071a1ff737415Ddc2085629D80B7C68741e17A18", label: "Mainnet", abi: 2 },   // v2: isLaunched + imageURI
-  test: { pad: "0xa66D7020a374BCC3e6424B9075E481617C669057", label: "CIRC-TEST", abi: 1 },  // pre-A8/A9, read-only preview
+  prod: { pad: "0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7", label: "Mainnet" },     // production v3
+  test: { pad: "0x8f2bbd9dA778071a8B6E9C2D3fEC3f3a6850E6BA", label: "CIRC-TEST" },   // v3 test instance, read-only preview
 };
 const PIN_ENDPOINT = "https://circ-launchpad-pin.vercel.app/api/pin"; // Vercel Function; the Pinata key lives only there
 const IPFS_GATEWAYS = ["https://ipfs.filebase.io/ipfs/", "https://dweb.link/ipfs/"]; // tried in order, then initials
@@ -56,7 +56,6 @@ const ABI = {
     "function claimCreator(address,address,bool)",
     "event LaunchCreated(address indexed token,address indexed quote,address indexed circuitNft,uint256 circuitId,address container,address creator,string imageURI)",
   ],
-  padV1Event: ["event LaunchCreated(address indexed token,address indexed quote,address indexed circuitNft,uint256 circuitId,address container,address creator)"],
   locker: ["function accrued(address,address) view returns (uint256)", "function claimCreator(address,address,bool)",
     "function positionManager() view returns (address)", "function collect(uint256)"],
   ur: ["function execute(bytes,bytes[],uint256) payable"],
@@ -66,6 +65,7 @@ const ABI = {
     "function name() view returns (string)", "function symbol() view returns (string)",
     "function decimals() view returns (uint8)", "function balanceOf(address) view returns (uint256)",
     "function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)",
+    "function totalSupply() view returns (uint256)",
   ],
   nft: ["function ownerOf(uint256) view returns (address)", "function name() view returns (string)"],
   registry: ["function account(address,bytes32,uint256,address,uint256) view returns (address)"],
@@ -198,7 +198,7 @@ async function loadLaunches() {
   state.head = await rp.getBlockNumber();
   let from = (INDEX?.scannedTo ?? state.head - 300) + 1;
   from = Math.max(from, state.head - 1500);
-  const iface = new E.Interface(INSTANCES[state.inst].abi === 2 ? ABI.pad : ABI.padV1Event);
+  const iface = new E.Interface(ABI.pad);
   const topic = iface.getEvent("LaunchCreated").topicHash;
   for (let b = from; b <= state.head; b += 100) {
     try {
@@ -229,8 +229,9 @@ async function multicall(calls) { // calls: [target, Interface, fn, args]. Retur
 async function readLaunches(list) {
   if (!list.length) return { launches: [], failed: 0 };
   const padI = new E.Interface(ABI.pad), ercI = new E.Interface(ABI.erc20), gradI = new E.Interface(ABI.graduator), svI = new E.Interface(ABI.stateView);
-  const first = await multicall(list.flatMap((L) => [[state.pad.addr, padI, "curves", [L.token]], [L.token, ercI, "name", []], [L.token, ercI, "symbol", []]]));
-  const rows = list.map((L, i) => ({ L, c: first[i * 3], name: first[i * 3 + 1]?.[0], symbol: first[i * 3 + 2]?.[0] }));
+  const first = await multicall(list.flatMap((L) => [[state.pad.addr, padI, "curves", [L.token]], [L.token, ercI, "name", []], [L.token, ercI, "symbol", []], [L.token, ercI, "totalSupply", []],
+    [L.token, ercI, "balanceOf", [L.creator || E.ZeroAddress]]]));
+  const rows = list.map((L, i) => ({ L, c: first[i * 5], name: first[i * 5 + 1]?.[0], symbol: first[i * 5 + 2]?.[0], dev: L.creator ? devHolding(first[i * 5 + 4]?.[0], first[i * 5 + 3]?.[0]) : null }));
   const ok = rows.filter((r) => r.c && r.c.quote !== E.ZeroAddress && r.name != null && r.symbol != null);
   const grad = ok.filter((r) => Number(r.c.status) === 2);
   const keys = await multicall(grad.map((r) => [state.pad.graduator, gradI, "poolKey", [r.L.token, r.c.quote]]));
@@ -244,7 +245,7 @@ async function readLaunches(list) {
   const withKey = grad.filter((r) => r.poolId);
   const slots = await multicall(withKey.map((r) => [A.STATE_VIEW, svI, "getSlot0", [r.poolId]]));
   withKey.forEach((r, i) => { r.sqrt = slots[i]?.sqrtPriceX96; });
-  return { launches: ok.map((r) => buildLaunch(r.L, r.c, r.name, r.symbol, r.poolId, r.key, r.sqrt)), failed: list.length - ok.length };
+  return { launches: ok.map((r) => ({ ...buildLaunch(r.L, r.c, r.name, r.symbol, r.poolId, r.key, r.sqrt), dev: r.dev })), failed: list.length - ok.length };
 }
 
 async function readLaunch(L) { // one launch, e.g. a token page opened by direct link
@@ -294,11 +295,19 @@ function chooseWallet() {
     document.body.appendChild(d);
   });
 }
+function noWallet() { // on phones an injected wallet only exists inside a wallet's own browser, so offer to go there
+  if (!isMobile(navigator.userAgent)) { toast("No wallet found. Install OKX Wallet, MetaMask or Rabby in this browser."); return; }
+  const d = document.createElement("div"); d.className = "wallets";
+  d.innerHTML = `<div><h3>Open in a wallet</h3><p class="muted" style="font-size:13.5px;margin:0 0 12px">This browser has no wallet. Open Circ inside OKX Wallet's browser, or open this page in the browser of the wallet you use.</p>
+    <a class="btn hub block" style="display:block;text-align:center;text-decoration:none;margin-bottom:8px" href="${esc(okxWalletLink(location.href))}" rel="noopener">Open in OKX Wallet</a><button class="btn ghost block">Close</button></div>`;
+  d.onclick = (e) => { if (e.target === d || e.target.closest("button") || e.target.closest("a")) d.remove(); };
+  document.body.appendChild(d);
+}
 function forget() { state.signer = null; state.account = null; $("#connect").textContent = "Connect"; }
 let walletProvider = null;
 async function connect() {
   const eth = await chooseWallet();
-  if (!eth) { if (!announced.size && !window.ethereum) toast("No wallet found. Install OKX Wallet or MetaMask, or open this page in your wallet's browser."); return null; }
+  if (!eth) { if (!announced.size && !window.ethereum) noWallet(); return null; }
   await eth.request({ method: "eth_requestAccounts" });
   if (Number(await eth.request({ method: "eth_chainId" })) !== CHAIN_ID) {
     try {
@@ -367,6 +376,10 @@ function avatar(L, cls = "") {
   const fallback = `<span>${initials(L.symbol)}</span>`;
   return `<div class="av ${cls}" style="background:${hue(L.token)}">${img ? ipfsImg(img) : ""}${fallback}</div>`;
 }
+function devPill(L) {
+  if (!L.dev) return `<span class="pill" title="The launching wallet isn't known yet">Dev holds –</span>`;
+  return `<span class="pill ${L.dev.high ? "dev-high" : ""}" title="Share of supply in the wallet that launched this token. Tokens it moved elsewhere don't count.">Dev holds ${L.dev.pct.toFixed(L.dev.pct < 10 ? 2 : 1)}%</span>`;
+}
 function pills(L) {
   return `<span class="pill ${STATUS_CLS[L.status]}">${STATUS[L.status]}</span>` +
     (isBem(L.quote) ? `<span class="pill vol" title="BEM-quoted: the graduation target is fixed in BEM, so its USD value moves with BEM's price">BEM · volatile quote</span>` : "");
@@ -385,14 +398,14 @@ async function viewFloor() {
     const x = L[k++];
     if (!x) { cells.push(`<div class="die empty"></div>`); continue; }
     const cls = ["die", "live", x.status === 2 ? "grad" : x.status === 1 ? "complete" : "", isBem(x.quote) ? "bem" : ""].join(" ");
-    cells.push(`<a class="${cls}" href="#/t/${x.token}" title="${esc(x.symbol)} · ${x.progress.toFixed(1)}% · ${usd(x.mcUsd)}">
+    cells.push(`<a class="${cls}" href="#/t/${x.token}" title="${esc(x.symbol)} · ${x.progress.toFixed(1)}% · ${usd(x.mcUsd)}${x.dev ? ` · Dev holds ${x.dev.pct.toFixed(1)}%` : ""}">
       ${x.status === 2 ? "" : `<div class="fill" style="height:${Math.max(4, x.progress)}%"></div>`}<span class="sym">${esc(x.symbol.slice(0, 5))}</span></a>`);
   }
   const rows = L.map((x) => `<a class="row" href="#/t/${x.token}">
       <div class="tok">${avatar(x)}<div><b>${esc(x.name)}</b><small>$${esc(x.symbol)} · ${circuitLabel(x)}</small></div></div>
       <div class="mono">${usd(x.mcUsd)}<div class="muted" style="font-size:12px">${num(x.mcQuote, 2)} ${x.cfg.sym}</div></div>
       <div class="hide-m"><div class="bar"><div style="width:${x.status ? 100 : x.progress}%"></div></div><small class="mono muted">${x.status ? "100" : x.progress.toFixed(1)}%</small></div>
-      <div class="hide-m">${pills(x)}</div>
+      <div class="status-cell">${pills(x)}${devPill(x)}</div>
       <div class="mono muted" style="font-size:12px">${x.ts ? ago(x.ts) : ""}</div></a>`).join("");
 
   $("#app").innerHTML = `
@@ -425,7 +438,7 @@ async function viewFloor() {
     <span><i style="background:var(--green)"></i>taped out</span><span><i style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--blue)"></i>BEM · volatile quote</span></div></div>
   <div class="wafer-wrap">
     <div class="wafer"><div class="grid">${cells.join("")}</div></div>
-    <div>${L.length ? `<div class="list"><div class="row head"><div>Token</div><div>Market cap</div><div class="hide-m">Curve</div><div class="hide-m">Status</div><div>Age</div></div>${rows}</div>`
+    <div>${L.length ? `<div class="list"><div class="row head"><div>Token</div><div>Market cap</div><div class="hide-m">Curve</div><div>Status · Dev</div><div>Age</div></div>${rows}</div>`
       : `<div class="empty-state"><b>The wafer is clean.</b>No launches on ${INSTANCES[state.inst].label} yet. ${state.inst === "prod"
         ? `<br><br><button class="btn" data-inst-go="test">See it with preview data</button>` : ""}</div>`}</div>
   </div>`;
@@ -475,7 +488,7 @@ async function viewToken(addr) {
   $("#app").innerHTML = `
   <div class="tp-head">${avatar(L)}
     <div><h1>${esc(L.name)} <span class="muted" style="font-weight:400">$${esc(L.symbol)}</span></h1>
-    <div class="meta">${pills(L)}<span class="pill">${circuitLabel(L)}</span>
+    <div class="meta">${pills(L)}${devPill(L)}<span class="pill">${circuitLabel(L)}</span>
       <a class="pill" href="${EXPLORER}/token/${L.token}" target="_blank" rel="noopener">${short(L.token)} ↗</a></div></div>
   </div>
   ${isBem(L.quote) ? `<div class="note vol">Volatile quote: this launch is priced in BEM. Its tape-out target is fixed at ${num(units(cfg.raise, 8), 2)} BEM, so the USD value of the target (and of every price here) moves with BEM.</div>` : ""}
@@ -907,7 +920,7 @@ function stepsBar() {
 }
 
 async function viewLaunch() {
-  if (INSTANCES[state.inst].abi !== 2) {
+  if (state.inst !== "prod") {
     $("#app").innerHTML = `<div class="empty-state" style="margin-top:40px"><b>Launching is mainnet-only</b>The preview instance is read-only.<br><br><button class="btn" data-inst-go="prod">Switch to Mainnet</button></div>`;
     return;
   }
@@ -1070,6 +1083,7 @@ async function stepConfirm() {
         <dt>Tape-out at</dt><dd>${num(units(c.raise, c.dec), 2)} ${c.sym} raised · ${usd(c.pEnd * T * qU)} MC</dd>
         ${minting ? `<dt>Mint the Nand</dt><dd>${E.formatEther(f.mintCost)} OKB</dd>` : ""}
         <dt>Dev buy</dt><dd>${dev ? `${esc(flow.dev)} ${bem ? "BEM" : "OKB"} → ~${num(units(devOut, 18), 2)} ${esc(flow.sym)}` : "none"}</dd>
+        ${dev ? `<dt>Shown publicly</dt><dd>Dev holds ${(units(devOut, 18) / T * 100).toFixed(2)}%</dd>` : ""}
         <dt>Logo</dt><dd>${flow.imageURI ? "pinned to IPFS" : "initials avatar"}</dd>
         <dt>Network fees (est.)</dt><dd>~${gasOkb.toPrecision(2)} OKB</dd>
         <dt><b style="color:var(--ink)">Total cost</b></dt><dd><b style="color:var(--ink)">${bem && dev ? `${esc(flow.dev)} BEM + ` : ""}~${totalOkb.toPrecision(3)} OKB · ${usd(totalOkb * state.prices.okbUsd + (bem ? dev * state.prices.bemUsd : 0))}</b></dd>

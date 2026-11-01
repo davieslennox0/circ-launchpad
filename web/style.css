@@ -391,3 +391,7 @@ html, body { overflow-x: clip; }
 .wallets button.w img { width: 28px; height: 28px; border-radius: 6px; }
 
 .linklike { background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; font: inherit; }
+
+/* "Dev holds X%": highlighted above 10% */
+.pill.dev-high { color: #ffb3ab; border-color: rgba(194,99,90,.6); background: rgba(194,99,90,.16); font-weight: 600; }
+.status-cell { display: flex; flex-wrap: wrap; gap: 4px; }
