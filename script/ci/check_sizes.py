@@ -20,8 +20,9 @@ for dirpath, _, files in os.walk(os.path.join(os.path.dirname(os.path.abspath(__
     for f in files:
         src_names |= set(re.findall(r"^(?:abstract )?contract (\w+)", open(os.path.join(dirpath, f)).read(), re.M))
 data = {k: v for k, v in data.items() if k in src_names}
-if "CurvePad" not in data:
-    sys.exit("CurvePad is missing from the size table")
+missing = {"CurvePad", "PositionLocker", "Graduator", "CircHook", "TokenDeployer", "LaunchToken"} - set(data)
+if missing:
+    sys.exit(f"missing from the size table: {', '.join(sorted(missing))}")
 
 bad = []
 print(f"{'contract':<28}{'runtime':>10}{'margin':>10}{'initcode':>10}{'margin':>10}")

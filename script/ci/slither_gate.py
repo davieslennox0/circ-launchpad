@@ -52,8 +52,9 @@ def check_guards_and_suppressions(root):
         for f in files:
             if "slither-disable" in open(os.path.join(dirpath, f)).read():
                 problems.append(f"{os.path.join(dirpath, f)}: slither-disable comments are not allowed; use the baseline")
-    if os.path.exists(os.path.join(root, "slither.db.json")):
-        problems.append("slither.db.json must not be committed; use the baseline")
+    for name in ("slither.db.json", "slither.config.json"):
+        if os.path.exists(os.path.join(root, name)):
+            problems.append(f"{name} must not exist: it can suppress findings before this gate sees them; use the baseline")
     return problems
 
 

@@ -57,7 +57,7 @@ jobs:
           python-version: "3.12"
       - run: pip install slither-analyzer==0.10.4
       - name: Run Slither (its exit code only says findings exist; the gate below decides)
-        run: rm -f slither.json slither.db.json; slither . --filter-paths "lib/|test/|script/|src/libraries/uniswap/" --exclude-dependencies --json slither.json || true
+        run: rm -f slither.json slither.db.json; slither . --filter-paths "circ-launchpad/(lib|test|script|src/libraries/uniswap)/" --exclude-dependencies --json slither.json || true
       - name: Fail on any finding not in the triaged baseline
         run: python3 script/ci/slither_gate.py slither.json script/ci/slither_baseline.json
       - uses: actions/upload-artifact@v4
@@ -158,6 +158,7 @@ jobs:
   build-artifacts:
     name: Build artifacts for the local deploy (forge 1.7.1, the bytes that get deployed)
     if: github.event_name == 'workflow_dispatch'
+    needs: [unit, sizes, fork, slither]  # no deploy artifact unless every gate is green
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
