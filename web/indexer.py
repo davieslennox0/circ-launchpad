@@ -6,7 +6,7 @@ block. This process scans CurvePad logs (LaunchCreated, Trade, CurveCompleted, G
 JSON file per instance. It holds no keys and sends no transactions. The site treats it only as a hint: every number it
 shows is re-read from the chain, and it scans forward from `scannedTo` itself.
 
-Env: OUT_DIR (default /srv/circ-web/data), RPC_URL, RPC_FALLBACK_URL, POLL_SECONDS. Instances are fixed below.
+Env: OUT_DIR (default /srv/circ-web/data), RPC_URL, RPC_FALLBACK_URL (comma-separated), POLL_SECONDS. Instances are fixed below.
 RPC_URL may hold an access token, so it is never logged. The fallback (default: public RPC) covers outages and old blocks,
 which a private plan may refuse. The website doesn't use these: visitors' browsers talk to the public RPC themselves.
 """
@@ -15,8 +15,8 @@ import os
 import time
 import urllib.request
 
-PUBLIC_RPC = "https://rpc.xlayer.tech"
-RPCS = list(dict.fromkeys([os.environ.get("RPC_URL", PUBLIC_RPC), os.environ.get("RPC_FALLBACK_URL", PUBLIC_RPC)]))
+PUBLIC_RPCS = "https://xlayerrpc.okx.com,https://rpc.xlayer.tech"
+RPCS = list(dict.fromkeys([os.environ.get("RPC_URL", PUBLIC_RPCS.split(",")[0]), *os.environ.get("RPC_FALLBACK_URL", PUBLIC_RPCS).split(",")]))
 OUT = os.environ.get("OUT_DIR", "/srv/circ-web/data")
 POLL = int(os.environ.get("POLL_SECONDS", "4"))
 CHUNK = 100

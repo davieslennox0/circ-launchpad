@@ -10,7 +10,7 @@ const { esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, pre
 
 const CHAIN_ID = 196;
 const RPC = "https://rpc.xlayer.tech";
-const RPCS = [RPC, "https://xlayerrpc.okx.com"];
+const RPCS = ["https://xlayerrpc.okx.com", RPC]; // both official public RPCs; retries move to the other one
 const EXPLORER = "https://www.oklink.com/x-layer";
 const INSTANCES = {
   prod: { pad: "0x4b9eb3Ee0a25FFE62e159080f392551a99493cC7" },     // production v3
