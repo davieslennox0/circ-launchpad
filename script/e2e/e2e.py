@@ -434,15 +434,15 @@ def main():
             if pad:
                 out(f"  reusing E2E_PAD {pad}")
             else:
-                # Deploy only the CI-built artifact: a silent recompile here could produce different bytes.
-            v = subprocess.run(["forge", "--version"], capture_output=True, text=True).stdout
-            if "1.7.1" not in v:
-                raise Abort(f"forge must be 1.7.1, the version CI builds with: {v.splitlines()[0] if v else 'not found'}")
-            if not FORK:
-                b = subprocess.run(["forge", "build", "--skip", "test"], cwd=ROOT, capture_output=True, text=True)
-                if "No files changed" not in b.stdout + b.stderr:
-                    raise Abort("out/ and cache/ aren't the CI artifact for this commit; refusing to recompile and deploy different bytes")
-            env = dict(os.environ, PRIVATE_KEY=deployer.key, CIRC_PROTOCOL=protocol, CIRC_SINK=sink)
+                    # Deploy only the CI-built artifact: a silent recompile here could produce different bytes.
+                v = subprocess.run(["forge", "--version"], capture_output=True, text=True).stdout
+                if "1.7.1" not in v:
+                    raise Abort(f"forge must be 1.7.1, the version CI builds with: {v.splitlines()[0] if v else 'not found'}")
+                if not FORK:
+                    b = subprocess.run(["forge", "build", "--skip", "test"], cwd=ROOT, capture_output=True, text=True)
+                    if "No files changed" not in b.stdout + b.stderr:
+                        raise Abort("out/ and cache/ aren't the CI artifact for this commit; refusing to recompile and deploy different bytes")
+                env = dict(os.environ, PRIVATE_KEY=deployer.key, CIRC_PROTOCOL=protocol, CIRC_SINK=sink)
                 p = subprocess.run(["forge", "script", "script/Deploy.s.sol:DeployTest", "--rpc-url", RPC, "--broadcast",
                                     "--slow", "-vv"], cwd=ROOT, capture_output=True, text=True, env=env)
                 text = p.stdout + p.stderr
