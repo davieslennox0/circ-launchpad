@@ -2,6 +2,9 @@
 // sent: the mock rejects every transaction and records what would have been signed).
 // Usage: node test/web/browser.mjs [url] [screenshot dir] [staging]
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 
 const URL_ = process.argv[2] || "https://circ.getsarf.xyz/";
@@ -15,8 +18,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0;
 const check = (name, ok, extra = "") => { console.log(`${ok ? "PASS" : "FAIL"}  ${name}${extra ? "  (" + extra + ")" : ""}`); if (!ok) failed++; };
 
-const chrome = spawn("chromium", ["--headless=old", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-extensions", "--remote-debugging-port=9333", "about:blank"], { stdio: "ignore" });
-const cleanup = () => { try { chrome.kill("SIGKILL"); } catch {} };
+const PROFILE = mkdtempSync(join(tmpdir(), "circ-browser-test-")); // removed at exit: a killed Chromium otherwise leaves ~90 MB per run
+const chrome = spawn("chromium", ["--headless=old", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-extensions", "--remote-debugging-port=9333", "--user-data-dir=" + PROFILE, "about:blank"], { stdio: "ignore" });
+const cleanup = () => { try { chrome.kill("SIGKILL"); } catch {} try { rmSync(PROFILE, { recursive: true, force: true }); } catch {} };
 process.on("exit", cleanup);
 
 async function open() {
@@ -305,7 +309,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   check(`${label}: Disconnect forgets the wallet`, await p.ev(`localStorage.getItem("circ.wallet") === null`));
   await p.send("Page.reload");
   await sleep(3500);
-  check(`${label}: stays disconnected after a reload`, await p.ev(`document.querySelector("#connect").innerText === "Connect"`));
+  check(`${label}: stays disconnected after a reload`, await p.until(`document.querySelector("#connect")?.innerText === "Connect"`, 20000) && await p.ev(`localStorage.getItem("circ.wallet") === null`));
   await p.send("Page.close").catch(() => {});
 }
 
