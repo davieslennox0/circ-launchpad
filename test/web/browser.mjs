@@ -116,14 +116,17 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     await p.ev(`viewFloor()`);
     await sleep(100);
   }
-  check(`${label}: only the kept sort and filter buttons exist`, await p.ev(`document.querySelectorAll("[data-order]").length === 2 && !document.querySelector('[data-filter="near"], [data-filter="live"], [data-order="hot"], [data-order="trade"]') && !!document.querySelector('[data-filter="watch"]')`));
+  check(`${label}: only the kept sort and filter buttons exist`, await p.ev(`document.querySelectorAll("#floor-order option").length === 7 && document.querySelectorAll("[data-filter]").length === 3 && !document.querySelector('[data-filter="near"], [data-filter="live"]') && !!document.querySelector('[data-filter="watch"]')`));
   if (STAGING) {
     await p.ev(`localStorage.removeItem("circ.watch")`);
-    await p.ev(`document.querySelector('[data-order="mc"]').click()`);
-    await sleep(100);
-    check(`${label}: sort applies and still shows tokens`, /DOUG/.test(await p.ev(text("#floor-view"))));
-    await p.ev(`document.querySelector('[data-order="new"]').click()`);
-    await sleep(100);
+    const firstAfter = async (order) => { await p.ev(`(() => { const o = document.querySelector("#floor-order"); o.value = ${JSON.stringify(order)}; o.dispatchEvent(new Event("change", { bubbles: true })); })()`); await sleep(120); return p.ev(`document.querySelector("#floor-view a.row small").innerText.split(" ")[0].slice(1)`); };
+    const sym = (e) => p.ev(`(() => { const a = [...state.launches].sort((x, y) => ${e}); return a[0].symbol; })()`);
+    check(`${label}: sort: newly launched`, (await firstAfter("new")) === await sym("y.block - x.block"));
+    check(`${label}: sort: oldest first`, (await firstAfter("old")) === await sym("x.block - y.block"));
+    const hi = await firstAfter("mc-high"), lo = await firstAfter("mc-low");
+    check(`${label}: sort: highest and lowest market cap`, hi === await sym("y.mcUsd - x.mcUsd") && lo === await sym("x.mcUsd - y.mcUsd"), `${hi} / ${lo}`);
+    for (const o of ["near", "up", "down"]) check(`${label}: sort: ${o} still lists every token`, (await firstAfter(o)) && await p.ev(`document.querySelectorAll("#floor-view a.row:not(.head)").length === state.launches.length`));
+    await firstAfter("new");
     const opened = await p.ev(`(() => { const before = location.hash; document.querySelector("[data-star]").click(); return location.hash === before; })()`);
     check(`${label}: starring doesn't open the token`, opened);
     await p.ev(`document.querySelector('[data-filter="watch"]').click()`);
@@ -243,7 +246,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   check(`${label}: no uncaught page errors`, bad.length === 0, bad.slice(0, 2).join(" || "));
   // Wallet: stays connected across a reload with no prompt, menu with copy and disconnect
   await p.send("Page.reload");
-  check(`${label}: still connected after a reload`, await p.until(`document.querySelector("#connect").innerText.startsWith("0x")`, 20000));
+  check(`${label}: still connected after a reload`, await p.until(`document.querySelector("#connect")?.innerText?.startsWith("0x")`, 20000));
   check(`${label}: the reload asked the wallet nothing`, !(await p.ev(`window.__prompts || 0`)));
   await p.until(`${text()}.length > 200`);
   await p.ev(`document.querySelector("#connect").click()`);
@@ -254,7 +257,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   await p.ev(`document.body.click()`);
   check(`${label}: tapping elsewhere closes the menu`, await p.ev(`!document.querySelector("#wallet-menu")`));
   await p.ev(`document.querySelector("#connect").click(); document.querySelector("#wm-off").click()`);
-  check(`${label}: Disconnect works`, await p.until(`document.querySelector("#connect").innerText === "Connect"`, 5000));
+  check(`${label}: Disconnect works`, await p.until(`document.querySelector("#connect")?.innerText === "Connect"`, 5000));
   await p.send("Page.reload");
   await sleep(3500);
   check(`${label}: stays disconnected after a reload`, await p.ev(`document.querySelector("#connect").innerText === "Connect"`));

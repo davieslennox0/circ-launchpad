@@ -525,3 +525,8 @@ svg.ic { display: inline-block; vertical-align: -2px; fill: none; stroke: curren
 /* Wallet menu */
 .wallet-menu { position: fixed; z-index: 70; min-width: 210px; display: flex; flex-direction: column; gap: 10px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; padding: 12px; box-shadow: 0 12px 36px rgba(0,0,0,.6); }
 .wm-addr { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--ink); font-size: 13.5px; }
+
+/* Sort list */
+.sort-pick { display: inline-flex; align-items: center; gap: 8px; font: 12px var(--mono); color: var(--muted); }
+.sort-pick select { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; font: 12px var(--mono); padding: 7px 8px; cursor: pointer; max-width: 210px; }
+.sort-pick select:focus { outline: none; border-color: var(--line-strong); }

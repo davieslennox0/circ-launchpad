@@ -545,7 +545,7 @@ async function viewFloor() {
   <div class="floor-tools">
     <input id="floor-q" type="search" placeholder="Search name, ticker or Nand number. Press / to jump here" aria-label="Search tokens" value="${esc(floor.q)}">
     <div class="seg-tabs" role="tablist" aria-label="Filter">${FLOOR_FILTERS.map(([id, l]) => `<button data-filter="${id}" class="${floor.filter === id ? "on" : ""}">${l}</button>`).join("")}</div>
-    <div class="seg-tabs" aria-label="Sort">${FLOOR_ORDERS.map(([id, l]) => `<button data-order="${id}" class="${floor.order === id ? "on" : ""}">${l}</button>`).join("")}</div>
+    <label class="sort-pick"><span>Sort</span><select id="floor-order" aria-label="Sort tokens">${FLOOR_ORDERS.map(([id, l]) => `<option value="${id}"${floor.order === id ? " selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="seg-tabs" role="tablist" aria-label="View">${FLOOR_VIEWS.map(([id, l]) => `<button data-view="${id}" class="${floor.view === id ? "on" : ""}">${l}</button>`).join("")}</div>
   </div>
   <div id="floor-view">${floorView()}</div>`;
@@ -555,8 +555,16 @@ async function viewFloor() {
 const FLOOR_VIEWS = [["wafer", "Wafer"], ["table", "Table"], ["board", "Board"], ["race", "Race"]];
 const FLOOR_FILTERS = [["all", "All"], ["uni", "On Uniswap"], ["watch", "Watchlist"]];
 const floor = { view: (() => { try { const v = localStorage.getItem("circ.view"); return ["table", "board", "race"].includes(v) ? v : "wafer"; } catch { return "wafer"; } })(), q: "", filter: "all", sort: "age", desc: true, col: "new", order: "new" };
-const FLOOR_ORDERS = [["new", "Newest"], ["mc", "Market cap"]];
-const FLOOR_ORDER_FN = { new: (x) => x.block, mc: (x) => x.mcUsd };
+// [id, label, value to sort on, highest first]. A token with no value (null) goes last.
+const FLOOR_ORDERS = [
+  ["new", "Newly launched", (x) => x.block, true],
+  ["old", "Oldest first", (x) => x.block, false],
+  ["mc-high", "Highest market cap", (x) => x.mcUsd, true],
+  ["mc-low", "Lowest market cap", (x) => x.mcUsd, false],
+  ["near", "Closest to tape-out", (x) => (x.status === 2 ? null : x.status === 1 ? 100 : x.progress), true],
+  ["up", "Biggest gainers, 1H", (x) => priceChange(x.prices, Date.now() / 1000, 3600, x.price), true],
+  ["down", "Biggest losers, 1H", (x) => priceChange(x.prices, Date.now() / 1000, 3600, x.price), false],
+];
 const watch = (() => { try { return new Set(JSON.parse(localStorage.getItem("circ.watch") || "[]")); } catch { return new Set(); } })(); // this browser only
 const isWatched = (x) => watch.has(x.token.toLowerCase());
 function toggleWatch(token) {
@@ -587,7 +595,8 @@ function floorView() {
   const L = state.launches;
   if (!L.length) return `<div class="empty-state"><b>The wafer is clean.</b>No launches yet.</div>`;
   const base = floor.filter === "watch" ? L.filter(isWatched) : L;
-  const list = sortBy(filterLaunches(base, floor.q, floor.filter === "watch" ? "all" : floor.filter), FLOOR_ORDER_FN[floor.order], true);
+  const [, , orderValue, orderDesc] = FLOOR_ORDERS.find(([id]) => id === floor.order) || FLOOR_ORDERS[0];
+  const list = sortBy(filterLaunches(base, floor.q, floor.filter === "watch" ? "all" : floor.filter), orderValue, orderDesc);
   if (!list.length) return `<div class="empty-state"><b>${floor.filter === "watch" && !floor.q ? "Your watchlist is empty." : `Nothing matches${floor.q ? ` "${esc(floor.q)}"` : " this filter"}.`}</b>${floor.filter === "watch" && !floor.q ? "Tap the star on a token to keep it here. It's saved in this browser." : "Try a ticker or a Nand number."}</div>`;
   return { table: floorTable, board: floorBoard, race: floorRace }[floor.view]?.(list) || floorWafer(list);
 }
@@ -733,16 +742,16 @@ function statStrip() {
 function showFloorView() { const v = $("#floor-view"); if (v) v.innerHTML = floorView(); }
 function setSegment(attr, value) { document.querySelectorAll(`[${attr}]`).forEach((b) => b.classList.toggle("on", b.getAttribute(attr) === value)); }
 document.addEventListener("input", (e) => { if (e.target.id === "floor-q") { floor.q = e.target.value; showFloorView(); } });
+document.addEventListener("change", (e) => { if (e.target.id === "floor-order") { floor.order = e.target.value; showFloorView(); } });
 document.addEventListener("click", (e) => {
   const star = e.target.closest("[data-star]");
   if (star) { e.preventDefault(); e.stopPropagation(); toggleWatch(star.dataset.star); const x = state.launches.find((l) => l.token === star.dataset.star); if (x) star.outerHTML = starBtn(x); if (floor.filter === "watch") showFloorView(); return; }
   const copy = e.target.closest("[data-copy]");
   if (copy) { e.preventDefault(); navigator.clipboard?.writeText(copy.dataset.copy).then(() => toast("Copied"), () => toast("Couldn't copy. Long-press the address instead.")); return; }
-  const t = e.target.closest("[data-view],[data-filter],[data-sort],[data-col],[data-frame],[data-order]");
+  const t = e.target.closest("[data-view],[data-filter],[data-sort],[data-col],[data-frame]");
   if (!t) return;
   if (t.dataset.view) { floor.view = t.dataset.view; try { localStorage.setItem("circ.view", floor.view); } catch {} setSegment("data-view", floor.view); }
   else if (t.dataset.filter) { floor.filter = t.dataset.filter; setSegment("data-filter", floor.filter); }
-  else if (t.dataset.order) { floor.order = t.dataset.order; setSegment("data-order", floor.order); }
   else if (t.dataset.sort) { floor.desc = floor.sort === t.dataset.sort ? !floor.desc : true; floor.sort = t.dataset.sort; }
   else if (t.dataset.col) { floor.col = t.dataset.col; floor.colPicked = true; }
   else if (t.dataset.frame) { const c = $("#price-chart"); const L = state.launches.find((x) => x.token === c?.dataset.token); if (L) c.innerHTML = priceChart(L, t.dataset.frame); return; }
