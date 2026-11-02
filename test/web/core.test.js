@@ -103,14 +103,12 @@ test("floor: stages, search and filters", () => {
   const all = [a, b, c, d];
   assert.deepEqual(all.map(C.floorStage), ["uni", "near", "new", "near"]);
   assert.deepEqual(C.filterLaunches(all, "", "uni"), [a]);
-  assert.deepEqual(C.filterLaunches(all, "", "near"), [b, d]);
-  assert.deepEqual(C.filterLaunches(all, "", "live"), [b, c, d]);
   assert.deepEqual(C.filterLaunches(all, "dou", "all"), [a]);
   assert.deepEqual(C.filterLaunches(all, "$hlf", "all"), [b]);
   assert.deepEqual(C.filterLaunches(all, "nand 2", "all"), [c]);
   assert.deepEqual(C.filterLaunches(all, "13", "all"), [a]);
   assert.deepEqual(C.filterLaunches(all, "0xcc", "all"), [c]);
-  assert.deepEqual(C.filterLaunches(all, "doug", "near"), []);
+  assert.deepEqual(C.filterLaunches(all, "hlf", "uni"), []);
 });
 
 test("king of the hill: closest to tape-out, or hot volume on the way there", () => {
@@ -130,16 +128,9 @@ test("king of the hill: closest to tape-out, or hot volume on the way there", ()
   assert.equal(C.kingOfTheHill([{ ...near, status: 1 }, busy], now).L.status, 1); // complete, about to tape out
 });
 
-test("activity: last trade, heating up, and the latest trades", () => {
-  const now = 10000;
-  const quiet = { trades: [{ ts: 100, q: "1" }], prices: [[50, 1], [100, 1]], price: 1 };
-  const busy = { trades: [{ ts: 9900, q: "1" }, { ts: 9950, q: "2" }], prices: [[50, 1], [9950, 2]], price: 2 };
-  const swapped = { trades: [{ ts: 100, q: "1" }], prices: [[50, 1], [9990, 2]], price: 2 };
-  assert.equal(C.lastTradeTs(quiet), 100);
-  assert.equal(C.lastTradeTs(swapped), 9990);       // a Uniswap swap counts
-  assert.equal(C.lastTradeTs({ prices: [[50, 1]] }), 0); // only the launch price: nothing traded
-  assert.ok(C.heat(busy, now) > C.heat(quiet, now));
-  assert.equal(C.heat(quiet, now), 0);
+test("activity: the latest launches and trades", () => {
+  const quiet = { trades: [{ ts: 100, q: "1" }] };
+  const busy = { trades: [{ ts: 9900, q: "1" }, { ts: 9950, q: "2" }] };
   const feed = C.recentActivity([quiet, busy], 2);
   assert.deepEqual(feed.map((a) => a.ts), [9950, 9900]);
   const launched = { ts: 9999, trades: [] };          // launched, nobody has traded yet: it still shows

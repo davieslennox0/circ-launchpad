@@ -43,6 +43,7 @@ const WALLET = `(() => {
   document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(e.violatedDirective + " " + e.blockedURI));
   const rpc = (method, params) => fetch("https://rpc.xlayer.tech", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }).then((r) => r.json()).then((j) => { if (j.error) throw j.error; return j.result; });
   const provider = { on() {}, removeListener() {}, request: async ({ method, params }) => {
+    if (method === "eth_requestAccounts") window.__prompts = (window.__prompts || 0) + 1;
     if (method === "eth_requestAccounts" || method === "eth_accounts") return ["${HOLDER}"];
     if (method === "eth_chainId") return "0xc4";
     if (method === "eth_sendTransaction") { window.__tx.push(params[0]); throw Object.assign(new Error("User rejected"), { code: 4001 }); }
@@ -59,6 +60,9 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   await p.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile });
   await p.send("Page.addScriptToEvaluateOnNewDocument", { source: WALLET });
   await go(p, "#/");
+  await p.ev(`localStorage.removeItem("circ.wallet")`); // the browser profile is shared between runs
+  await p.send("Page.reload");
+  await sleep(1500);
   check(`${label}: home loads production data`, await p.until(`${text()}.includes("Tape-out raise (WOKB)")`));
   check(`${label}: no 'fair' wording`, !/fair/i.test(await p.ev(text())));
   console.log("INFO  " + label + ": page load " + await p.ev(`(() => { const r = performance.getEntriesByType("resource").filter((e) => /xlayer/.test(e.name)); return r.length + " RPC requests, finished at " + Math.round(Math.max(...r.map((e) => e.responseEnd))) + " ms"; })()`));
@@ -93,9 +97,9 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     check(`${label}: search by Nand number`, /DOUG/.test(await search("nand 13")));
     check(`${label}: search with no match says so`, /Nothing matches/.test(await search("zzzzz")));
     await search("");
-    await p.ev(`document.querySelector('[data-filter="near"]').click()`);
+    await p.ev(`document.querySelector('[data-filter="uni"]').click()`);
     await sleep(100);
-    check(`${label}: filter applies`, !/DOUG/.test(await p.ev(text("#floor-view"))));
+    check(`${label}: On Uniswap filter applies`, /DOUG/.test(await p.ev(text("#floor-view"))));
     await p.ev(`document.querySelector('[data-filter="all"]').click()`);
     await sleep(100);
   }
@@ -112,7 +116,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     await p.ev(`viewFloor()`);
     await sleep(100);
   }
-  check(`${label}: sort buttons and watchlist filter exist`, await p.ev(`document.querySelectorAll("[data-order]").length === 4 && !!document.querySelector('[data-filter="watch"]')`));
+  check(`${label}: only the kept sort and filter buttons exist`, await p.ev(`document.querySelectorAll("[data-order]").length === 2 && !document.querySelector('[data-filter="near"], [data-filter="live"], [data-order="hot"], [data-order="trade"]') && !!document.querySelector('[data-filter="watch"]')`));
   if (STAGING) {
     await p.ev(`localStorage.removeItem("circ.watch")`);
     await p.ev(`document.querySelector('[data-order="mc"]').click()`);
@@ -237,6 +241,23 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   if (rpcLimited) console.log(`INFO  ${label}: ${rpcLimited} RPC request(s) rate-limited or dropped, then retried`);
   const bad = p.problems.filter((x) => !/429|Too Many|ERR_|Failed to load resource|rpc\.xlayer\.tech/.test(x));
   check(`${label}: no uncaught page errors`, bad.length === 0, bad.slice(0, 2).join(" || "));
+  // Wallet: stays connected across a reload with no prompt, menu with copy and disconnect
+  await p.send("Page.reload");
+  check(`${label}: still connected after a reload`, await p.until(`document.querySelector("#connect").innerText.startsWith("0x")`, 20000));
+  check(`${label}: the reload asked the wallet nothing`, !(await p.ev(`window.__prompts || 0`)));
+  await p.until(`${text()}.length > 200`);
+  await p.ev(`document.querySelector("#connect").click()`);
+  check(`${label}: tapping the wallet opens the menu`, await p.ev(`!!document.querySelector("#wallet-menu")`));
+  check(`${label}: menu has the copy icon with the full address`, await p.ev(`document.querySelector("#wallet-menu [data-copy] svg.ic") && document.querySelector("#wallet-menu [data-copy]").dataset.copy.length === 42`));
+  check(`${label}: menu stays inside the screen`, await p.ev(`(() => { const r = document.querySelector("#wallet-menu").getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`));
+  await p.shot(`${label}-wallet-menu`);
+  await p.ev(`document.body.click()`);
+  check(`${label}: tapping elsewhere closes the menu`, await p.ev(`!document.querySelector("#wallet-menu")`));
+  await p.ev(`document.querySelector("#connect").click(); document.querySelector("#wm-off").click()`);
+  check(`${label}: Disconnect works`, await p.until(`document.querySelector("#connect").innerText === "Connect"`, 5000));
+  await p.send("Page.reload");
+  await sleep(3500);
+  check(`${label}: stays disconnected after a reload`, await p.ev(`document.querySelector("#connect").innerText === "Connect"`));
   await p.send("Page.close").catch(() => {});
 }
 

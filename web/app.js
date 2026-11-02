@@ -5,7 +5,7 @@
  * signed in the user's own wallet. */
 "use strict";
 const E = ethers;
-const { amountFromBalance, lastTradeTs, heat, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, guardBlocksLeft, recommendDirect, parseContainerRevert,
+const { amountFromBalance, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, esc, short, initials, safeImage: safeImageCore, nandIds, nextNandId, previewCurveBuy, guardBlocksLeft, recommendDirect, parseContainerRevert,
   uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength } = CircCore;
 
 const CHAIN_ID = 196;
@@ -338,8 +338,84 @@ function noWallet() { // on phones an injected wallet only exists inside a walle
   d.onclick = (e) => { if (e.target === d || e.target.closest("button") || e.target.closest("a")) d.remove(); };
   document.body.appendChild(d);
 }
-function forget() { state.signer = null; state.account = null; $("#connect").textContent = "Connect"; }
+function forget() { state.signer = null; state.account = null; $("#connect").textContent = "Connect"; closeWalletMenu(); }
 let walletProvider = null;
+// Which wallet this browser last connected, so a reload can reconnect it without a prompt. Disconnect clears it.
+const WALLET_KEY = "circ.wallet";
+const savedWallet = () => { try { return localStorage.getItem(WALLET_KEY); } catch { return null; } };
+const clearSavedWallet = () => { try { localStorage.removeItem(WALLET_KEY); } catch {} };
+function saveWallet(eth) {
+  const d = [...announced.values()].find((x) => x.provider === eth);
+  try { localStorage.setItem(WALLET_KEY, d?.info?.rdns || d?.info?.name || "injected"); } catch {}
+}
+function findWallet(key) {
+  const d = [...announced.values()].find((x) => (x.info.rdns || x.info.name) === key);
+  return d?.provider || (key === "injected" ? window.ethereum : null) || null;
+}
+async function useWallet(eth) {
+  walletProvider = eth;
+  state.signer = await new E.BrowserProvider(eth).getSigner();
+  state.account = await state.signer.getAddress();
+  $("#connect").textContent = short(state.account);
+}
+const listening = new WeakSet();
+function listenTo(eth) {
+  if (!eth.on || listening.has(eth)) return;
+  listening.add(eth);
+  eth.on("accountsChanged", async (a) => {
+    if (eth !== walletProvider) return;
+    if (!a?.length) { if (state.account) { clearSavedWallet(); forget(); route(); } return; }
+    if (a[0].toLowerCase() === state.account?.toLowerCase()) return;
+    await useWallet(eth); route();
+  });
+  eth.on("chainChanged", async (id) => {
+    if (eth !== walletProvider) return;
+    if (Number(id) === CHAIN_ID) { await useWallet(eth); route(); return; }
+    forget(); toast("Network changed: reconnect on X Layer to continue."); route();
+  });
+}
+// After a reload. eth_accounts never prompts: it only answers if this site is still connected in the wallet.
+async function restoreWallet() {
+  const key = savedWallet();
+  if (!key) return false;
+  let eth = findWallet(key);
+  for (let i = 0; i < 8 && !eth; i++) { // wallets can announce themselves a moment after the page loads
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+    await new Promise((r) => setTimeout(r, 100));
+    eth = findWallet(key);
+  }
+  if (!eth) return false;
+  const accounts = await eth.request({ method: "eth_accounts" });
+  if (!accounts?.length || Number(await eth.request({ method: "eth_chainId" })) !== CHAIN_ID) return false;
+  walletProvider = eth;
+  listenTo(eth);
+  await useWallet(eth);
+  return true;
+}
+function closeWalletMenu() { document.querySelector("#wallet-menu")?.remove(); }
+function toggleWalletMenu() {
+  if (document.querySelector("#wallet-menu")) return closeWalletMenu();
+  const r = $("#connect").getBoundingClientRect(), m = document.createElement("div");
+  m.id = "wallet-menu"; m.className = "wallet-menu";
+  m.style.top = `${r.bottom + 8}px`;
+  m.style.right = `${Math.max(12, document.documentElement.clientWidth - r.right)}px`;
+  m.innerHTML = `<div class="wm-addr"><span class="mono">${short(state.account)}</span><button class="copy" data-copy="${state.account}" aria-label="Copy wallet address" title="Copy wallet address">${COPY_ICON}</button></div>
+    <button class="btn block" id="wm-off">Disconnect</button>`;
+  document.body.appendChild(m);
+  $("#wm-off", m).onclick = disconnectWallet;
+}
+function disconnectWallet() {
+  const eth = walletProvider;
+  clearSavedWallet();
+  forget();
+  walletProvider = null;
+  // Asks the wallet to drop this site too, where it supports that. If it doesn't, the site still forgets the wallet.
+  eth?.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] }).catch(() => {});
+  toast("Disconnected");
+  route();
+}
+document.addEventListener("click", (e) => { if (!e.target.closest("#wallet-menu, #connect")) closeWalletMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeWalletMenu(); });
 async function connect() {
   const eth = await chooseWallet();
   if (!eth) { if (!announced.size && !window.ethereum) noWallet(); return null; }
@@ -354,14 +430,9 @@ async function connect() {
         rpcUrls: [RPC], blockExplorerUrls: [EXPLORER] }] });
     }
   }
-  if (walletProvider !== eth && eth.on) {
-    eth.on("accountsChanged", () => { forget(); route(); });
-    eth.on("chainChanged", () => { forget(); toast("Network changed: reconnect on X Layer to continue."); route(); });
-  }
-  walletProvider = eth;
-  state.signer = await new E.BrowserProvider(eth).getSigner();
-  state.account = await state.signer.getAddress();
-  $("#connect").textContent = short(state.account);
+  listenTo(eth);
+  await useWallet(eth);
+  saveWallet(eth);
   return state.signer;
 }
 async function signer() { return state.signer || connect(); }
@@ -482,10 +553,10 @@ async function viewFloor() {
 
 // ---------------------------------------------------------------- fab floor views: the same real launches, drawn five ways
 const FLOOR_VIEWS = [["wafer", "Wafer"], ["table", "Table"], ["board", "Board"], ["race", "Race"]];
-const FLOOR_FILTERS = [["all", "All"], ["live", "On the curve"], ["near", "Close to the gate"], ["uni", "On Uniswap"], ["watch", "Watchlist"]];
+const FLOOR_FILTERS = [["all", "All"], ["uni", "On Uniswap"], ["watch", "Watchlist"]];
 const floor = { view: (() => { try { const v = localStorage.getItem("circ.view"); return ["table", "board", "race"].includes(v) ? v : "wafer"; } catch { return "wafer"; } })(), q: "", filter: "all", sort: "age", desc: true, col: "new", order: "new" };
-const FLOOR_ORDERS = [["new", "Newest"], ["trade", "Last trade"], ["hot", "Heating up"], ["mc", "Market cap"]];
-const FLOOR_ORDER_FN = { new: (x) => x.block, trade: (x) => lastTradeTs(x), hot: (x) => heat(x, Date.now() / 1000), mc: (x) => x.mcUsd };
+const FLOOR_ORDERS = [["new", "Newest"], ["mc", "Market cap"]];
+const FLOOR_ORDER_FN = { new: (x) => x.block, mc: (x) => x.mcUsd };
 const watch = (() => { try { return new Set(JSON.parse(localStorage.getItem("circ.watch") || "[]")); } catch { return new Set(); } })(); // this browser only
 const isWatched = (x) => watch.has(x.token.toLowerCase());
 function toggleWatch(token) {
@@ -1544,6 +1615,14 @@ document.addEventListener("error", (e) => {
   const g = +img.dataset.g + 1;
   if (g < IPFS_GATEWAYS.length) { img.dataset.g = g; img.src = IPFS_GATEWAYS[g] + img.dataset.rel; } else img.remove();
 }, true);
-$("#connect").onclick = () => connect().then(() => route()).catch((e) => toast(e.shortMessage || e.message));
+$("#connect").onclick = () => { if (state.account) return toggleWalletMenu(); connect().then(() => route()).catch((e) => toast(e.shortMessage || e.message)); };
 window.addEventListener("hashchange", () => { if (location.hash !== "#wafer") route(); });
-route();
+// Reconnect first, so the first page already knows the wallet. A slow wallet can't hold the page back.
+{
+  let late = false;
+  const restored = restoreWallet().catch(() => false);
+  Promise.race([restored, new Promise((r) => setTimeout(() => { late = true; r(); }, 1500))]).then(() => {
+    route();
+    restored.then((ok) => { if (ok && late) route(); });
+  });
+}

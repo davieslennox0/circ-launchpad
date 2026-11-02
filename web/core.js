@@ -159,8 +159,7 @@
   function filterLaunches(list, query, filter) {
     const q = String(query || "").trim().toLowerCase().replace(/^\$/, "");
     return list.filter((L) => {
-      if (filter === "live" && L.status === 2) return false;
-      if ((filter === "near" || filter === "uni") && floorStage(L) !== filter) return false;
+      if (filter === "uni" && L.status !== 2) return false;
       if (!q) return true;
       const id = String(L.circuitId);
       return String(L.name).toLowerCase().includes(q) || String(L.symbol).toLowerCase().includes(q) || id === q || `nand ${id}` === q || `#${id}` === q || String(L.token).toLowerCase() === q;
@@ -206,18 +205,6 @@
     return best;
   }
 
-  // Newest trade time, from the indexer's curve trades and price points. 0 when nothing has traded.
-  function lastTradeTs(L) {
-    const t = (L.trades || []).reduce((m, x) => Math.max(m, x.ts || 0), 0);
-    const pts = L.prices || [];
-    return Math.max(t, pts.length > 1 ? pts[pts.length - 1][0] : 0);
-  }
-  // Heating up: trades in the last hour, plus how much the price moved either way, so a busy token rises.
-  function heat(L, nowSec) {
-    const n = (L.trades || []).filter((t) => t.ts > nowSec - 3600).length;
-    const ch = priceChange(L.prices, nowSec, 3600, L.price);
-    return n + (ch === null ? 0 : Math.min(Math.abs(ch), 100) / 10);
-  }
   // Latest launches and curve trades across all tokens, newest first. A launch has no `t`.
   function recentActivity(list, limit) {
     return list.flatMap((L) => [...(L.ts ? [{ L, ts: L.ts }] : []), ...(L.trades || []).map((t) => ({ L, t, ts: t.ts }))])
@@ -230,6 +217,6 @@
     return (spendable * BigInt(percent)) / 100n;
   }
 
-  return { amountFromBalance, lastTradeTs, heat, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
+  return { amountFromBalance, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
     recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength };
 });
