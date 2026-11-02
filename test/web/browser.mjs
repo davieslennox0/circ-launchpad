@@ -2,6 +2,9 @@
 // sent: the mock rejects every transaction and records what would have been signed).
 // Usage: node test/web/browser.mjs [url] [screenshot dir] [staging]
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 
 const URL_ = process.argv[2] || "https://circ.getsarf.xyz/";
@@ -15,8 +18,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0;
 const check = (name, ok, extra = "") => { console.log(`${ok ? "PASS" : "FAIL"}  ${name}${extra ? "  (" + extra + ")" : ""}`); if (!ok) failed++; };
 
-const chrome = spawn("chromium", ["--headless=old", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-extensions", "--remote-debugging-port=9333", "about:blank"], { stdio: "ignore" });
-const cleanup = () => { try { chrome.kill("SIGKILL"); } catch {} };
+const PROFILE = mkdtempSync(join(tmpdir(), "circ-browser-test-")); // removed at exit: a killed Chromium otherwise leaves ~90 MB per run
+const chrome = spawn("chromium", ["--headless=old", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-extensions", "--remote-debugging-port=9333", "--user-data-dir=" + PROFILE, "about:blank"], { stdio: "ignore" });
+const cleanup = () => { try { chrome.kill("SIGKILL"); } catch {} try { rmSync(PROFILE, { recursive: true, force: true }); } catch {} };
 process.on("exit", cleanup);
 
 async function open() {
@@ -60,7 +64,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   await p.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile });
   await p.send("Page.addScriptToEvaluateOnNewDocument", { source: WALLET });
   await go(p, "#/");
-  await p.ev(`localStorage.removeItem("circ.wallet")`); // the browser profile is shared between runs
+  await p.ev(`localStorage.removeItem("circ.wallet"); localStorage.removeItem("circ.limit"); localStorage.removeItem("circ.view")`); // the browser profile is shared between runs
   await p.send("Page.reload");
   await sleep(1500);
   check(`${label}: home loads production data`, await p.until(`${text()}.includes("Tape-out raise (WOKB)")`));
@@ -151,6 +155,34 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
     await p.ev(`window.dispatchEvent(new KeyboardEvent("x")); document.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true }))`);
     check(`${label}: "/" focuses search`, await p.ev(`document.activeElement?.id === "floor-q"`));
     await p.ev(`document.activeElement.blur()`);
+  }
+  {
+    // Show menu, with enough tokens to matter. Repeats the real rows, in this page only.
+    const before = await p.ev(`(() => { window.__real = state.launches; if (!state.launches.length) return 0; state.launches = Array.from({ length: 25 }, (_, i) => ({ ...window.__real[i % window.__real.length], block: i })); showFloorView(); return 25; })()`);
+    if (before) {
+      const rows = () => p.ev(`document.querySelectorAll("#floor-view a.row").length`);
+      check(`${label}: list shows 10 by default`, (await rows()) === 10 && /Showing 10 of 25/.test(await p.ev(text("#floor-view"))));
+      await p.ev(`document.querySelector("#limit-btn").click()`);
+      check(`${label}: Show menu lists 10 to 100`, (await p.ev(`[...document.querySelectorAll("#limit-list button")].map((b) => b.innerText).join()`)) === "10,20,30,40,50,100" && !(await p.ev(`document.querySelector("#limit-list").hidden`)));
+      check(`${label}: Show menu stays inside the screen`, await p.ev(`document.querySelector("#limit-list").getBoundingClientRect().right <= innerWidth`));
+      await p.ev(`document.querySelector("#limit-list").scrollIntoView({ block: "center" })`);
+      await sleep(150);
+      await p.shot(`${label}-show-menu`);
+      await p.ev(`document.querySelector('#limit-list [data-limit="20"]').click()`);
+      await sleep(100);
+      check(`${label}: choosing 20 shows 20`, (await rows()) === 20 && (await p.ev(text("#limit-btn"))).includes("20"));
+      await p.ev(`document.querySelector('[data-view="table"]').click()`);
+      await sleep(100);
+      check(`${label}: Table follows the Show menu`, await p.ev(`document.querySelectorAll("#floor-view a.f-row").length === 20`));
+      await p.ev(`document.querySelector('[data-view="wafer"]').click()`);
+      await p.ev(`document.querySelector("#limit-btn").click()`);
+      await p.ev(`document.querySelector('#limit-list [data-limit="100"]').click()`);
+      await sleep(100);
+      check(`${label}: choosing 100 shows all 25`, (await rows()) === 25 && /Showing 25 of 25/.test(await p.ev(text("#floor-view"))));
+      await p.ev(`document.querySelector("#limit-btn").click()`);
+      await p.ev(`document.querySelector('#limit-list [data-limit="10"]').click()`);
+      await p.ev(`(state.launches = window.__real, showFloorView())`);
+    }
   }
   await p.ev(`confetti()`);
   check(`${label}: confetti runs`, await p.ev(`!!document.querySelector("#confetti")`));
@@ -253,6 +285,13 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   if (rpcLimited) console.log(`INFO  ${label}: ${rpcLimited} RPC request(s) rate-limited or dropped, then retried`);
   const bad = p.problems.filter((x) => !/429|Too Many|ERR_|Failed to load resource|rpc\.xlayer\.tech/.test(x));
   check(`${label}: no uncaught page errors`, bad.length === 0, bad.slice(0, 2).join(" || "));
+  await go(p, "#/creator");
+  await p.until(`/Your Circuit's earnings/.test(${text("#app")})`, 20000);
+  await sleep(1000);
+  check(`${label}: footer sits at the bottom of a short page`, await p.ev(`Math.abs(document.querySelector("footer").getBoundingClientRect().bottom - innerHeight) < 2 || document.documentElement.scrollHeight > innerHeight`), await p.ev(`Math.round(document.querySelector("footer").getBoundingClientRect().bottom) + " of " + innerHeight`));
+  check(`${label}: footer is centered`, await p.ev(`(() => { const a = document.querySelector("footer .foot-copy").getBoundingClientRect(); return Math.abs((a.left + a.right) / 2 - document.documentElement.clientWidth / 2) < 2; })()`));
+  check(`${label}: page content keeps its width`, await p.ev(`document.querySelector("main").getBoundingClientRect().width >= Math.min(innerWidth, 1000)`) || label === "phone");
+  await p.shot(`${label}-footer`);
   // Wallet: stays connected across a reload with no prompt, menu with copy and disconnect
   await p.send("Page.reload");
   check(`${label}: still connected after a reload`, await p.until(`document.querySelector("#connect")?.innerText?.startsWith("0x")`, 20000));
@@ -270,7 +309,7 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 1400, false], ["phone", 3
   check(`${label}: Disconnect forgets the wallet`, await p.ev(`localStorage.getItem("circ.wallet") === null`));
   await p.send("Page.reload");
   await sleep(3500);
-  check(`${label}: stays disconnected after a reload`, await p.ev(`document.querySelector("#connect").innerText === "Connect"`));
+  check(`${label}: stays disconnected after a reload`, await p.until(`document.querySelector("#connect")?.innerText === "Connect"`, 20000) && await p.ev(`localStorage.getItem("circ.wallet") === null`));
   await p.send("Page.close").catch(() => {});
 }
 
