@@ -138,6 +138,85 @@
   // and a transaction sent now lands in head + 1 at the earliest.
   function guardBlocksLeft(launchBlock, guard, head) { return Math.max(0, launchBlock + guard - head - 1); }
 
-  return { guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
+  // Change from the price at the start of a window to `current`. points: [[timestamp, price], ...], oldest first.
+  // A token younger than the window is measured from its first point, the launch price. Null if there's no history.
+  function priceChange(points, nowSec, windowSec, current) {
+    if (!points || !points.length || !(current > 0)) return null;
+    let anchor = points[0][1];
+    for (const [ts, p] of points) { if (ts <= nowSec - windowSec) anchor = p; else break; }
+    return anchor > 0 ? (current / anchor - 1) * 100 : null;
+  }
+  function formatChange(pct) {
+    if (pct === null || pct === undefined) return { text: "–", cls: "flat" };
+    if (Math.abs(pct) < 0.05) return { text: "0%", cls: "flat" };
+    const a = Math.abs(pct);
+    const n = a >= 10 ? Math.round(a).toLocaleString("en-US") : String(Number(a.toFixed(1)));
+    return { text: (pct > 0 ? "+" : "-") + n + "%", cls: pct > 0 ? "up" : "down" };
+  }
+
+  // Fab floor. Stage: just launched, close to the gate (half the curve sold, or complete), or on Uniswap.
+  function floorStage(L) { return L.status === 2 ? "uni" : L.status === 1 || L.progress >= 50 ? "near" : "new"; }
+  function filterLaunches(list, query, filter) {
+    const q = String(query || "").trim().toLowerCase().replace(/^\$/, "");
+    return list.filter((L) => {
+      if (filter === "uni" && L.status !== 2) return false;
+      if (!q) return true;
+      const id = String(L.circuitId);
+      return String(L.name).toLowerCase().includes(q) || String(L.symbol).toLowerCase().includes(q) || id === q || `nand ${id}` === q || `#${id}` === q || String(L.token).toLowerCase() === q;
+    });
+  }
+  // Sorts a copy. Rows with no value go last in either direction.
+  function sortBy(list, value, descending) {
+    const dir = descending ? -1 : 1;
+    return list.map((L) => [L, value(L)]).sort(([, a], [, b]) => {
+      const an = a === null || a === undefined, bn = b === null || b === undefined;
+      return an || bn ? an - bn : (a - b) * dir;
+    }).map(([L]) => L);
+  }
+  // Polyline for a price chart: the price at the window's start, what happened inside it, and the current price.
+  function chartLine(points, nowSec, windowSec, current, W, H) {
+    if (!points || !points.length || !(current > 0)) return null;
+    const start = nowSec - windowSec;
+    const inside = points.filter(([ts]) => ts > start);
+    const before = points.filter(([ts]) => ts <= start).pop();
+    const pts = [...(before ? [[start, before[1]]] : []), ...inside, [nowSec, current]];
+    const t0 = pts[0][0], span = Math.max(1, nowSec - t0), logs = pts.map(([, p]) => Math.log(p));
+    const lo = Math.min(...logs), hi = Math.max(...logs), pad = 8;
+    return pts.map(([ts], i) => {
+      const x = ((ts - t0) / span) * W;
+      const y = hi === lo ? H / 2 : pad + (1 - (logs[i] - lo) / (hi - lo)) * (H - 2 * pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+  }
+
+  // King of the hill: one token not yet on Uniswap, picked on curve progress plus the last hour's curve volume.
+  // volume is the hour's volume as a share of the raise: trading a full raise in an hour counts as 50 points of progress.
+  function kingOfTheHill(list, nowSec) {
+    let best = null;
+    for (const L of list) {
+      if (L.status === 2) continue;
+      const raise = Number(L.cfg?.raise || 0);
+      const volume = raise > 0 ? (L.trades || []).filter((t) => t.ts > nowSec - 3600).reduce((sum, t) => sum + Number(t.q), 0) / raise : 0;
+      const progress = L.status ? 100 : L.progress;
+      if (progress < 1 && volume === 0) continue; // a fresh launch nobody has traded isn't on the hill
+      const score = progress + Math.min(volume, 1) * 50;
+      if (!best || score > best.score || (score === best.score && L.block > best.L.block)) best = { L, score, volume };
+    }
+    return best;
+  }
+
+  // Latest launches and curve trades across all tokens, newest first. A launch has no `t`.
+  function recentActivity(list, limit) {
+    return list.flatMap((L) => [...(L.ts ? [{ L, ts: L.ts }] : []), ...(L.trades || []).map((t) => ({ L, t, ts: t.ts }))])
+      .sort((a, b) => b.ts - a.ts).slice(0, limit);
+  }
+
+  // Amount for a 25% / 50% / Max button. `reserve` stays in the wallet for gas when paying with native OKB.
+  function amountFromBalance(balance, percent, reserve = 0n) {
+    const spendable = balance > reserve ? balance - reserve : 0n;
+    return (spendable * BigInt(percent)) / 100n;
+  }
+
+  return { amountFromBalance, recentActivity, kingOfTheHill, floorStage, filterLaunches, sortBy, chartLine, priceChange, formatChange, guardBlocksLeft, esc, short, initials, safeImage, nandIds, nextNandId, feeOn, grossForNet, tokensOut, quoteForTokens, previewCurveBuy,
     recommendDirect, parseContainerRevert, uncollectedFee, encodeSwap, devHolding, okxWalletLink, isMobile, byteLength };
 });

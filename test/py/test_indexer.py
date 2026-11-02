@@ -13,6 +13,36 @@ def launch(n=10, uri=b"ipfs://x", tx="0xaa"):
 def trade(n=11, i=1, tx="0xbb"):
     return {"topics": [ix.TOPICS["trade"], t(TOKEN), t("0x" + "33" * 20)], "data": "0x" + w(1) + w(100) + w(200) + w(1) + w(0) + w(0), "blockNumber": hex(n), "logIndex": hex(i), "transactionHash": tx}
 
+class Prices(unittest.TestCase):
+    def test_curve_price_uses_each_quote_decimals(self):
+        self.assertAlmostEqual(ix.curve_price(2 * 10**18, 10**27, "0x" + "e5" * 20), 2e-9)
+        self.assertAlmostEqual(ix.curve_price(2 * 10**8, 10**27, ix.BEM), 2e-9)
+
+    def test_pool_price_follows_currency_order(self):
+        sq = int(2 ** 96 * (2e-9 ** 0.5))
+        self.assertAlmostEqual(ix.pool_price(sq, "0x" + "11" * 20, "0x" + "e5" * 20) / 2e-9, 1, 6)  # token is currency0
+        self.assertAlmostEqual(ix.pool_price(int(2 ** 96 / (2e-9 ** 0.5)), "0x" + "f1" * 20, "0x" + "e5" * 20) / 2e-9, 1, 6)  # token is currency1
+
+    def test_repeated_window_adds_no_point(self):
+        L = {}
+        for _ in range(2):
+            ix.add_point(L, 10, 1, 100, 1.0, now=200)
+            ix.add_point(L, 11, 0, 150, 2.0, now=200)
+        self.assertEqual(L["prices"], [[100, 1.0], [150, 2.0]])
+
+    def test_keeps_one_anchor_older_than_the_window(self):
+        L = {}
+        for i, ts in enumerate([10, 20, 30, 90000]):
+            ix.add_point(L, i, 0, ts, float(i), now=90000)
+        self.assertEqual(L["prices"], [[30, 2.0], [90000, 3.0]])
+
+    def test_migration_rescans_and_keeps_launches(self):
+        s = {"startBlock": 5, "scannedTo": 99, "poolScannedTo": 99, "launches": {TOKEN: {"prices": [[1, 1.0]], "lastPt": [9, 9], "startPt": True}}}
+        ix.migrate(s)
+        self.assertEqual((s["scannedTo"], s["v"], "poolScannedTo" in s), (4, ix.INDEX_VERSION, False))
+        self.assertEqual(s["launches"][TOKEN]["prices"], [])
+
+
 class Indexer(unittest.TestCase):
     def setUp(self):
         self.calls = []
@@ -58,7 +88,7 @@ class Indexer(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ix.OUT = d
             with open(os.path.join(d, "index-prod.json"), "w") as f:
-                json.dump({"pad": "0xold", "scannedTo": 5, "launches": {"a": 1}}, f)
+                json.dump({"v": ix.INDEX_VERSION, "pad": "0xold", "scannedTo": 5, "launches": {"a": 1}}, f)
             s = ix.load("prod")
             self.assertEqual(s["pad"], ix.INSTANCES["prod"]["pad"])
             self.assertEqual(s["launches"], {})
@@ -69,7 +99,7 @@ class Indexer(unittest.TestCase):
             ix.OUT = d
             p = os.path.join(d, "index-prod.json")
             with open(p, "w") as f:
-                json.dump({"pad": ix.INSTANCES["prod"]["pad"].lower(), "scannedTo": 99, "launches": {}}, f)
+                json.dump({"v": ix.INDEX_VERSION, "pad": ix.INSTANCES["prod"]["pad"].lower(), "scannedTo": 99, "launches": {}}, f)
             self.assertEqual(ix.load("prod")["scannedTo"], 99)
             with open(p, "w") as f:
                 f.write("{broken")

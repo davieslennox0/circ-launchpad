@@ -74,6 +74,97 @@ test("guard: blocks left match the contract's block.number < launchBlock + GUARD
   assert.equal(C.guardBlocksLeft(100, 30, 500), 0);
 });
 
+test("price change: anchors at the start of the window, or at launch for a younger token", () => {
+  const pts = [[1000, 10], [5000, 20], [9000, 40]];
+  assert.equal(C.priceChange(pts, 10000, 300, 40), 0);      // nothing in the last 5 minutes
+  assert.equal(C.priceChange(pts, 9100, 300, 20), 0 - 0);   // anchored on the 5000 point
+  assert.equal(C.priceChange(pts, 10000, 3600, 40), 100);   // 6400 falls after 5000: 20 -> 40
+  assert.equal(C.priceChange(pts, 10000, 86400, 5), -50);   // younger than the window: from launch
+  assert.equal(C.priceChange([], 10000, 300, 1), null);
+  assert.equal(C.priceChange(null, 10000, 300, 1), null);
+  assert.equal(C.priceChange(pts, 10000, 300, 0), null);
+});
+
+test("price change: format and colour", () => {
+  assert.deepEqual(C.formatChange(2), { text: "+2%", cls: "up" });
+  assert.deepEqual(C.formatChange(-57.4), { text: "-57%", cls: "down" });
+  assert.deepEqual(C.formatChange(-96.2), { text: "-96%", cls: "down" });
+  assert.deepEqual(C.formatChange(0.34), { text: "+0.3%", cls: "up" });
+  assert.deepEqual(C.formatChange(1234.6), { text: "+1,235%", cls: "up" });
+  assert.deepEqual(C.formatChange(0.01), { text: "0%", cls: "flat" });
+  assert.deepEqual(C.formatChange(null), { text: "–", cls: "flat" });
+});
+
+test("floor: stages, search and filters", () => {
+  const a = { name: "Doug", symbol: "DOUG", circuitId: 13, token: "0xAA", status: 2, progress: 100 };
+  const b = { name: "Half", symbol: "HLF", circuitId: 14, token: "0xBB", status: 0, progress: 50 };
+  const c = { name: "New one", symbol: "NEW", circuitId: 2, token: "0xCC", status: 0, progress: 3 };
+  const d = { name: "Full", symbol: "FUL", circuitId: 3, token: "0xDD", status: 1, progress: 100 };
+  const all = [a, b, c, d];
+  assert.deepEqual(all.map(C.floorStage), ["uni", "near", "new", "near"]);
+  assert.deepEqual(C.filterLaunches(all, "", "uni"), [a]);
+  assert.deepEqual(C.filterLaunches(all, "dou", "all"), [a]);
+  assert.deepEqual(C.filterLaunches(all, "$hlf", "all"), [b]);
+  assert.deepEqual(C.filterLaunches(all, "nand 2", "all"), [c]);
+  assert.deepEqual(C.filterLaunches(all, "13", "all"), [a]);
+  assert.deepEqual(C.filterLaunches(all, "0xcc", "all"), [c]);
+  assert.deepEqual(C.filterLaunches(all, "hlf", "uni"), []);
+});
+
+test("king of the hill: closest to tape-out, or hot volume on the way there", () => {
+  const cfg = { raise: 1000n };
+  const now = 10000, hot = [{ ts: 9900, q: "1000" }], old = [{ ts: 100, q: "99999" }];
+  const near = { status: 0, progress: 80, cfg, trades: [], block: 1 };
+  const busy = { status: 0, progress: 40, cfg, trades: hot, block: 2 };
+  const uni = { status: 2, progress: 100, cfg, trades: hot, block: 3 };
+  const stale = { status: 0, progress: 60, cfg, trades: old, block: 4 };
+  const fresh = { status: 0, progress: 0, cfg, trades: [], block: 5 };
+  assert.equal(C.kingOfTheHill([near, stale], now).L, near);             // volume outside the hour doesn't count
+  assert.equal(C.kingOfTheHill([stale, busy], now).L, busy); // 40 + 50 beats 60
+  assert.equal(C.kingOfTheHill([near, busy], now).L, busy);              // 90 beats 80
+  assert.equal(C.kingOfTheHill([uni], now), null);                       // on Uniswap: off the hill
+  assert.equal(C.kingOfTheHill([fresh], now), null);                     // untraded launch
+  assert.equal(C.kingOfTheHill([], now), null);
+  assert.equal(C.kingOfTheHill([{ ...near, status: 1 }, busy], now).L.status, 1); // complete, about to tape out
+});
+
+test("activity: the latest launches and trades", () => {
+  const quiet = { trades: [{ ts: 100, q: "1" }] };
+  const busy = { trades: [{ ts: 9900, q: "1" }, { ts: 9950, q: "2" }] };
+  const feed = C.recentActivity([quiet, busy], 2);
+  assert.deepEqual(feed.map((a) => a.ts), [9950, 9900]);
+  const launched = { ts: 9999, trades: [] };          // launched, nobody has traded yet: it still shows
+  const withNew = C.recentActivity([quiet, busy, launched], 2);
+  assert.equal(withNew[0].L, launched);
+  assert.equal(withNew[0].t, undefined);
+  assert.equal(withNew[1].t.ts, 9950);
+  assert.equal(C.recentActivity([], 5).length, 0);
+});
+
+test("quick buttons: percent of balance, keeping gas back when paying in OKB", () => {
+  assert.equal(C.amountFromBalance(1000n, 25), 250n);
+  assert.equal(C.amountFromBalance(1000n, 100), 1000n);         // Max sell: everything
+  assert.equal(C.amountFromBalance(1000n, 100, 100n), 900n);    // Max buy: gas stays behind
+  assert.equal(C.amountFromBalance(1000n, 50, 100n), 450n);
+  assert.equal(C.amountFromBalance(50n, 100, 100n), 0n);        // less than the gas reserve
+  assert.equal(C.amountFromBalance(0n, 100), 0n);
+});
+
+test("floor: sorting keeps rows without a value last", () => {
+  const rows = [{ v: 1 }, { v: null }, { v: 3 }];
+  assert.deepEqual(C.sortBy(rows, (r) => r.v, true).map((r) => r.v), [3, 1, null]);
+  assert.deepEqual(C.sortBy(rows, (r) => r.v, false).map((r) => r.v), [1, 3, null]);
+});
+
+test("chart: starts at the window, ends at the current price, and survives thin data", () => {
+  const line = C.chartLine([[100, 1], [900, 4]], 1000, 500, 2, 600, 200).split(" ");
+  assert.equal(line.length, 3);
+  assert.equal(line[0].split(",")[0], "0.0");
+  assert.equal(line[2].split(",")[0], "600.0");
+  assert.equal(C.chartLine([[100, 2]], 1000, 500, 2, 600, 200), "0.0,100.0 600.0,100.0"); // flat
+  assert.equal(C.chartLine([], 1000, 500, 2, 600, 200), null);
+});
+
 test("logos: only ipfs:// with a valid CID renders", () => {
   const hide = new Set();
   assert.equal(C.safeImage(`ipfs://${CID}`, null, hide), CID);
