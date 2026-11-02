@@ -410,7 +410,7 @@ function disconnectWallet() {
   forget();
   walletProvider = null;
   // Asks the wallet to drop this site too, where it supports that. If it doesn't, the site still forgets the wallet.
-  eth?.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] }).catch(() => {});
+  try { Promise.resolve(eth?.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] })).catch(() => {}); } catch {} // some wallets throw straight away
   toast("Disconnected");
   route();
 }
@@ -517,7 +517,7 @@ async function viewFloor() {
   $("#app").innerHTML = `
   <section class="hero">
     <div>
-      <div class="eyebrow">Circ Launchpad · X Layer</div>
+      <p class="hero-note">A launchpad on X Layer, built on TapeOut World primitives.</p>
       <h1>Every token is <em>wired</em> to a circuit.</h1>
       <p class="lede">Launch a bonding-curve token from a TapeOut Circuit you hold. Half of every fee flows to that
       Circuit's Container, forever. When the curve fills, it tapes out into a Uniswap v4 pool whose liquidity is locked for good.</p>
@@ -545,7 +545,8 @@ async function viewFloor() {
   <div class="floor-tools">
     <input id="floor-q" type="search" placeholder="Search name, ticker or Nand number. Press / to jump here" aria-label="Search tokens" value="${esc(floor.q)}">
     <div class="seg-tabs" role="tablist" aria-label="Filter">${FLOOR_FILTERS.map(([id, l]) => `<button data-filter="${id}" class="${floor.filter === id ? "on" : ""}">${l}</button>`).join("")}</div>
-    <label class="sort-pick"><span>Sort</span><select id="floor-order" aria-label="Sort tokens">${FLOOR_ORDERS.map(([id, l]) => `<option value="${id}"${floor.order === id ? " selected" : ""}>${l}</option>`).join("")}</select></label>
+    <div class="sort-menu"><button id="sort-btn" aria-haspopup="true" aria-expanded="false"><span class="muted">Sort</span> <b id="sort-now">${FLOOR_ORDERS.find(([id]) => id === floor.order)?.[1] || FLOOR_ORDERS[0][1]}</b> <span aria-hidden="true">▾</span></button>
+      <div id="sort-list" class="sort-list" hidden>${FLOOR_ORDERS.map(([id, l]) => `<button data-order="${id}" class="${floor.order === id ? "on" : ""}">${l}</button>`).join("")}</div></div>
     <div class="seg-tabs" role="tablist" aria-label="View">${FLOOR_VIEWS.map(([id, l]) => `<button data-view="${id}" class="${floor.view === id ? "on" : ""}">${l}</button>`).join("")}</div>
   </div>
   <div id="floor-view">${floorView()}</div>`;
@@ -742,7 +743,20 @@ function statStrip() {
 function showFloorView() { const v = $("#floor-view"); if (v) v.innerHTML = floorView(); }
 function setSegment(attr, value) { document.querySelectorAll(`[${attr}]`).forEach((b) => b.classList.toggle("on", b.getAttribute(attr) === value)); }
 document.addEventListener("input", (e) => { if (e.target.id === "floor-q") { floor.q = e.target.value; showFloorView(); } });
-document.addEventListener("change", (e) => { if (e.target.id === "floor-order") { floor.order = e.target.value; showFloorView(); } });
+// Our own menu, not a <select>: the native picker doesn't work reliably inside wallet browsers.
+function closeSortMenu() { const l = $("#sort-list"); if (l) { l.hidden = true; $("#sort-btn").setAttribute("aria-expanded", "false"); } }
+document.addEventListener("click", (e) => {
+  const open = e.target.closest("#sort-btn"), pick = e.target.closest("[data-order]");
+  if (open) { const l = $("#sort-list"); l.hidden = !l.hidden; open.setAttribute("aria-expanded", String(!l.hidden)); return; }
+  if (pick) {
+    floor.order = pick.dataset.order;
+    setSegment("data-order", floor.order);
+    $("#sort-now").textContent = pick.textContent;
+    showFloorView();
+  }
+  closeSortMenu();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSortMenu(); });
 document.addEventListener("click", (e) => {
   const star = e.target.closest("[data-star]");
   if (star) { e.preventDefault(); e.stopPropagation(); toggleWatch(star.dataset.star); const x = state.launches.find((l) => l.token === star.dataset.star); if (x) star.outerHTML = starBtn(x); if (floor.filter === "watch") showFloorView(); return; }
