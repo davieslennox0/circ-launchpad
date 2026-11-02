@@ -547,6 +547,8 @@ async function viewFloor() {
     <div class="seg-tabs" role="tablist" aria-label="Filter">${FLOOR_FILTERS.map(([id, l]) => `<button data-filter="${id}" class="${floor.filter === id ? "on" : ""}">${l}</button>`).join("")}</div>
     <div class="sort-menu"><button id="sort-btn" aria-haspopup="true" aria-expanded="false"><span class="muted">Sort</span> <b id="sort-now">${FLOOR_ORDERS.find(([id]) => id === floor.order)?.[1] || FLOOR_ORDERS[0][1]}</b> <span aria-hidden="true">▾</span></button>
       <div id="sort-list" class="sort-list" hidden>${FLOOR_ORDERS.map(([id, l]) => `<button data-order="${id}" class="${floor.order === id ? "on" : ""}">${l}</button>`).join("")}</div></div>
+    <div class="sort-menu"><button id="limit-btn" class="menu-btn" aria-haspopup="true" aria-expanded="false"><span class="muted">Show</span> <b id="limit-now">${floor.limit}</b> <span aria-hidden="true">▾</span></button>
+      <div id="limit-list" class="sort-list short" hidden>${FLOOR_LIMITS.map((n) => `<button data-limit="${n}" class="${floor.limit === n ? "on" : ""}">${n}</button>`).join("")}</div></div>
     <div class="seg-tabs" role="tablist" aria-label="View">${FLOOR_VIEWS.map(([id, l]) => `<button data-view="${id}" class="${floor.view === id ? "on" : ""}">${l}</button>`).join("")}</div>
   </div>
   <div id="floor-view">${floorView()}</div>`;
@@ -566,6 +568,8 @@ const FLOOR_ORDERS = [
   ["up", "Biggest gainers, 1H", (x) => priceChange(x.prices, Date.now() / 1000, 3600, x.price), true],
   ["down", "Biggest losers, 1H", (x) => priceChange(x.prices, Date.now() / 1000, 3600, x.price), false],
 ];
+const FLOOR_LIMITS = [10, 20, 30, 40, 50, 100];
+floor.limit = (() => { try { const n = Number(localStorage.getItem("circ.limit")); return FLOOR_LIMITS.includes(n) ? n : 10; } catch { return 10; } })();
 const watch = (() => { try { return new Set(JSON.parse(localStorage.getItem("circ.watch") || "[]")); } catch { return new Set(); } })(); // this browser only
 const isWatched = (x) => watch.has(x.token.toLowerCase());
 function toggleWatch(token) {
@@ -599,10 +603,12 @@ function floorView() {
   const [, , orderValue, orderDesc] = FLOOR_ORDERS.find(([id]) => id === floor.order) || FLOOR_ORDERS[0];
   const list = sortBy(filterLaunches(base, floor.q, floor.filter === "watch" ? "all" : floor.filter), orderValue, orderDesc);
   if (!list.length) return `<div class="empty-state"><b>${floor.filter === "watch" && !floor.q ? "Your watchlist is empty." : `Nothing matches${floor.q ? ` "${esc(floor.q)}"` : " this filter"}.`}</b>${floor.filter === "watch" && !floor.q ? "Tap the star on a token to keep it here. It's saved in this browser." : "Try a ticker or a Nand number."}</div>`;
-  return { table: floorTable, board: floorBoard, race: floorRace }[floor.view]?.(list) || floorWafer(list);
+  const shown = list.slice(0, floor.limit);
+  const body = floor.view === "table" ? floorTable(list) : floor.view === "board" ? floorBoard(shown) : floor.view === "race" ? floorRace(shown) : floorWafer(list, shown);
+  return `${body}<div class="floor-count mono muted">Showing ${Math.min(floor.limit, list.length)} of ${list.length}</div>`;
 }
 
-function floorWafer(L) {
+function floorWafer(L, shown) { // the wafer draws every token; the list beside it follows the Show menu
   const cells = [];
   let k = 0;
   for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
@@ -614,7 +620,7 @@ function floorWafer(L) {
     cells.push(`<a class="${cls}" href="#/t/${x.token}" title="${esc(x.symbol)} · ${x.progress.toFixed(1)}% · ${usd(x.mcUsd)}${x.dev ? ` · Dev holds ${x.dev.pct.toFixed(1)}%` : ""}">
       ${x.status === 2 ? "" : `<div class="fill" style="height:${Math.max(4, x.progress)}%"></div>`}<span class="sym">${esc(x.symbol.slice(0, 5))}</span></a>`);
   }
-  const rows = L.map((x) => `<a class="row" href="#/t/${x.token}">
+  const rows = shown.map((x) => `<a class="row" href="#/t/${x.token}">
       <div class="tok">${starBtn(x)}${avatar(x)}<div><b>${esc(x.name)}</b><small>$${esc(x.symbol)} · ${circuitLabel(x)}</small></div></div>
       <div class="mono">${usd(x.mcUsd)}<div class="muted" style="font-size:12px">${num(x.mcQuote, 2)} ${x.cfg.sym}</div><div class="bar mini" title="Curve sold: ${curvePct(x)}%"><div style="width:${x.status ? 100 : x.progress}%"></div></div></div>
       <div class="chgs">${changes(x).map((c) => `<div class="chg ${c.cls}" data-l="${c.label}">${c.text}</div>`).join("")}</div>
@@ -629,7 +635,7 @@ function floorWafer(L) {
 }
 
 function floorTable(L) {
-  const sorted = sortBy(L, FLOOR_SORTS[floor.sort], floor.desc);
+  const sorted = sortBy(L, FLOOR_SORTS[floor.sort], floor.desc).slice(0, floor.limit);
   const head = (id, label, cls = "") => `<button class="${cls}" data-sort="${id}" aria-sort="${floor.sort === id ? (floor.desc ? "descending" : "ascending") : "none"}">${label}${floor.sort === id ? (floor.desc ? " ↓" : " ↑") : ""}</button>`;
   return `<div class="list f-table"><div class="f-row f-head"><div>Token</div>${head("age", "Age", "c-age")}${head("mc", "Market cap", "r")}${head("ch5", "5M", "r")}${head("ch1h", "1H", "r")}${head("curve", "Curve", "c-curve")}<div class="c-status">Status</div></div>
     ${sorted.map((x) => `<a class="f-row" href="#/t/${x.token}"><div class="tok">${starBtn(x)}${avatar(x)}<div><b>${esc(x.symbol)}</b><small>${esc(x.name)} · ${circuitLabel(x)}</small></div></div>
@@ -744,10 +750,27 @@ function showFloorView() { const v = $("#floor-view"); if (v) v.innerHTML = floo
 function setSegment(attr, value) { document.querySelectorAll(`[${attr}]`).forEach((b) => b.classList.toggle("on", b.getAttribute(attr) === value)); }
 document.addEventListener("input", (e) => { if (e.target.id === "floor-q") { floor.q = e.target.value; showFloorView(); } });
 // Our own menu, not a <select>: the native picker doesn't work reliably inside wallet browsers.
-function closeSortMenu() { const l = $("#sort-list"); if (l) { l.hidden = true; $("#sort-btn").setAttribute("aria-expanded", "false"); } }
+function closeSortMenu(except) {
+  for (const [b, l] of [["#sort-btn", "#sort-list"], ["#limit-btn", "#limit-list"]]) {
+    if (l === except || !$(l)) continue;
+    $(l).hidden = true; $(b).setAttribute("aria-expanded", "false");
+  }
+}
 document.addEventListener("click", (e) => {
-  const open = e.target.closest("#sort-btn"), pick = e.target.closest("[data-order]");
-  if (open) { const l = $("#sort-list"); l.hidden = !l.hidden; open.setAttribute("aria-expanded", String(!l.hidden)); return; }
+  const open = e.target.closest("#sort-btn, #limit-btn"), pick = e.target.closest("[data-order]"), lim = e.target.closest("[data-limit]");
+  if (open) {
+    const id = open.id === "sort-btn" ? "#sort-list" : "#limit-list", l = $(id);
+    closeSortMenu(id);
+    l.hidden = !l.hidden; open.setAttribute("aria-expanded", String(!l.hidden));
+    return;
+  }
+  if (lim) {
+    floor.limit = Number(lim.dataset.limit);
+    try { localStorage.setItem("circ.limit", String(floor.limit)); } catch {}
+    setSegment("data-limit", lim.dataset.limit);
+    $("#limit-now").textContent = lim.dataset.limit;
+    showFloorView();
+  }
   if (pick) {
     floor.order = pick.dataset.order;
     setSegment("data-order", floor.order);

@@ -42,7 +42,11 @@ body {
   font: 15px/1.5 var(--sans);
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
 }
+main.wrap { flex: 1 0 auto; width: 100%; box-sizing: border-box; }
 a { color: inherit; }
 button, input, select { font: inherit; color: inherit; }
 .mono { font-family: var(--mono); font-feature-settings: "zero" 1; }
@@ -241,7 +245,7 @@ svg.curve { width: 100%; height: auto; display: block; }
 .form .field input { font-size: 18px; }
 
 footer { border-top: 1px solid var(--line); margin-top: 70px; padding: 26px 0 40px; color: var(--dim); font: 12px var(--mono); }
-footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; justify-content: space-between; }
+footer .wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
 footer a { color: var(--muted); text-decoration: none; }
 
 .toast {
@@ -372,7 +376,7 @@ html, body { overflow-x: clip; }
 .av { display: grid; place-items: center; font: 600 12px var(--mono); color: var(--ink); }
 .tp-head .av { font-size: 16px; flex: none; }
 
-.foot-copy { display: flex; flex-direction: column; gap: 6px; }
+.foot-copy { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 
 /* Fab floor on a phone: one stacked card per token, no column header */
 @media (max-width: 600px) {
@@ -528,8 +532,8 @@ svg.ic { display: inline-block; vertical-align: -2px; fill: none; stroke: curren
 
 /* Sort menu */
 .sort-menu { position: relative; display: inline-block; }
-#sort-btn { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font: 12px var(--mono); padding: 8px 10px; cursor: pointer; }
-#sort-btn b { font-weight: 500; }
+#sort-btn, #limit-btn { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font: 12px var(--mono); padding: 8px 10px; cursor: pointer; }
+#sort-btn b, #limit-btn b { font-weight: 500; }
 .sort-list { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; min-width: 210px; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; padding: 4px; box-shadow: 0 12px 36px rgba(0,0,0,.6); }
 .sort-list[hidden] { display: none; }
 .sort-list button { background: transparent; border: 0; border-radius: 7px; color: var(--muted); font: 12.5px var(--mono); text-align: left; padding: 10px; cursor: pointer; }
@@ -537,3 +541,5 @@ svg.ic { display: inline-block; vertical-align: -2px; fill: none; stroke: curren
 .sort-list button.on { background: var(--s3); color: var(--ink); }
 
 .hero-note { margin: 0 0 12px; font-size: 13px; color: var(--muted); }
+.sort-list.short { min-width: 90px; }
+.floor-count { margin-top: 12px; font-size: 12px; text-align: right; }
