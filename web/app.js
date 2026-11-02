@@ -543,7 +543,7 @@ async function viewFloor() {
   ${kingCard()}
   ${statStrip()}
   <div class="floor-tools">
-    <input id="floor-q" type="search" placeholder="Search name, ticker or Nand number. Press / to jump here" aria-label="Search tokens" value="${esc(floor.q)}">
+    <input id="floor-q" type="search" placeholder="Search name, ticker or Nand number" aria-label="Search tokens" value="${esc(floor.q)}">
     <div class="seg-tabs" role="tablist" aria-label="Filter">${FLOOR_FILTERS.map(([id, l]) => `<button data-filter="${id}" class="${floor.filter === id ? "on" : ""}">${l}</button>`).join("")}</div>
     <div class="sort-menu"><button id="sort-btn" aria-haspopup="true" aria-expanded="false"><span class="muted">Sort</span> <b id="sort-now">${FLOOR_ORDERS.find(([id]) => id === floor.order)?.[1] || FLOOR_ORDERS[0][1]}</b> <span aria-hidden="true">▾</span></button>
       <div id="sort-list" class="sort-list" hidden>${FLOOR_ORDERS.map(([id, l]) => `<button data-order="${id}" class="${floor.order === id ? "on" : ""}">${l}</button>`).join("")}</div></div>
